@@ -96,8 +96,13 @@ function WelcomeScreen({ onOtpSent, onSignUp }: { onOtpSent: (email: string) => 
     if (result.type === 'success') {
       const params = extractAuthParams(result.url);
       if (params.access_token && params.refresh_token) {
-        const { error: sessionError } = await supabase.auth.setSession({ access_token: params.access_token, refresh_token: params.refresh_token });
+        const { data: sessionData, error: sessionError } = await supabase.auth.setSession({ access_token: params.access_token, refresh_token: params.refresh_token });
         if (sessionError) setError(sessionError.message);
+        if (sessionData.session?.user.id) {
+          const acceptedAt = new Date().toISOString();
+          await supabase.auth.updateUser({ data: { terms_accepted_at: acceptedAt } });
+          await supabase.from('profiles').update({ terms_accepted_at: acceptedAt }).eq('user_id', sessionData.session.user.id);
+        }
       }
     }
     setLoading(false);
@@ -113,6 +118,7 @@ function WelcomeScreen({ onOtpSent, onSignUp }: { onOtpSent: (email: string) => 
         <PrimaryButton label="Email me a code" loading={loading} onPress={sendOtp} />
         <View style={styles.dividerRow}><View style={styles.divider} /><Text style={styles.dividerText}>OR</Text><View style={styles.divider} /></View>
         <SecondaryButton label="Continue with Google" onPress={signInWithGoogle} />
+        <Text style={styles.policyDisclosure}>By continuing with Google, you accept the <Text style={styles.link}>Terms of Use</Text> and <Text style={styles.link}>Privacy Policy</Text>.</Text>
         {error ? <Text style={styles.error}>{error}</Text> : null}
       </View>
       <View style={styles.inlineRow}><Text style={styles.muted}>New to Ayurnidaan?</Text><Pressable onPress={onSignUp}><Text style={styles.link}> Create account</Text></Pressable></View>
@@ -243,4 +249,5 @@ const styles = StyleSheet.create({
   dividerRow: { alignItems: 'center', flexDirection: 'row', gap: 10 }, divider: { backgroundColor: colors.border, flex: 1, height: 1 }, dividerText: { color: colors.muted, fontSize: 11, fontWeight: '700' }, inlineRow: { flexDirection: 'row', justifyContent: 'center', marginTop: 22 }, muted: { color: colors.muted, fontSize: 14 }, link: { color: colors.primary, fontWeight: '700' }, error: { color: colors.error, fontSize: 13, lineHeight: 19, textAlign: 'center' },
   backButton: { alignSelf: 'flex-start', marginBottom: 22, paddingVertical: 5 }, backButtonText: { color: colors.primary, fontSize: 16, fontWeight: '700' }, checkRow: { alignItems: 'flex-start', flexDirection: 'row', gap: 11 }, checkbox: { alignItems: 'center', borderColor: colors.border, borderRadius: 6, borderWidth: 1.5, height: 23, justifyContent: 'center', marginTop: 1, width: 23 }, checkboxSelected: { backgroundColor: colors.primary, borderColor: colors.primary }, checkmark: { color: '#FFFFFF', fontSize: 15, fontWeight: '800' }, terms: { color: colors.muted, flex: 1, fontSize: 13, lineHeight: 20 },
   choiceRow: { flexDirection: 'row', gap: 10 }, choice: { alignItems: 'center', borderColor: colors.border, borderRadius: 14, borderWidth: 1, flex: 1, justifyContent: 'center', minHeight: 50 }, choiceSelected: { backgroundColor: colors.primary, borderColor: colors.primary }, choiceText: { color: colors.text, fontSize: 15, fontWeight: '600' }, choiceTextSelected: { color: '#FFFFFF' }, measureRow: { flexDirection: 'row', gap: 12 }, measureField: { flex: 1 }, privacyNote: { color: colors.muted, fontSize: 12, lineHeight: 18, textAlign: 'center' },
+  policyDisclosure: { color: colors.muted, fontSize: 12, lineHeight: 18, textAlign: 'center' },
 });
