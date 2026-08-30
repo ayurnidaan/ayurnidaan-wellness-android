@@ -20,7 +20,7 @@ const logo = require('./assets/ayurnidaan-logo.png');
 export default function App() {
   const [screen, setScreen] = useState<Screen>('splash');
   const [session, setSession] = useState<Session | null>(null);
-  const [phone, setPhone] = useState('');
+  const [email, setEmail] = useState('');
   const [otpPurpose, setOtpPurpose] = useState<OtpPurpose>('login');
 
   useEffect(() => {
@@ -34,13 +34,13 @@ export default function App() {
 
   if (screen === 'splash') return <BrandSplash onFinish={() => setScreen(session ? 'profile' : 'welcome')} />;
   if (screen === 'welcome') {
-    return <WelcomeScreen onOtpSent={(value) => { setPhone(value); setOtpPurpose('login'); setScreen('verify'); }} onSignUp={() => setScreen('signup')} />;
+    return <WelcomeScreen onOtpSent={(value) => { setEmail(value); setOtpPurpose('login'); setScreen('verify'); }} onSignUp={() => setScreen('signup')} />;
   }
   if (screen === 'signup') {
-    return <SignUpScreen onBack={() => setScreen('welcome')} onOtpSent={(value) => { setPhone(value); setOtpPurpose('signup'); setScreen('verify'); }} />;
+    return <SignUpScreen onBack={() => setScreen('welcome')} onOtpSent={(value) => { setEmail(value); setOtpPurpose('signup'); setScreen('verify'); }} />;
   }
   if (screen === 'verify') {
-    return <VerifyOtpScreen phone={phone} purpose={otpPurpose} onBack={() => setScreen(otpPurpose === 'signup' ? 'signup' : 'welcome')} onVerified={() => setScreen('profile')} />;
+    return <VerifyOtpScreen email={email} purpose={otpPurpose} onBack={() => setScreen(otpPurpose === 'signup' ? 'signup' : 'welcome')} onVerified={() => setScreen('profile')} />;
   }
   if (screen === 'profile') return <ProfileScreen session={session} onComplete={() => setScreen('home')} />;
   return <HomeScreen onSignOut={() => setScreen('welcome')} />;
@@ -67,19 +67,22 @@ function BrandSplash({ onFinish }: { onFinish: () => void }) {
   );
 }
 
-function WelcomeScreen({ onOtpSent, onSignUp }: { onOtpSent: (phone: string) => void; onSignUp: () => void }) {
-  const [phone, setPhone] = useState('');
+function WelcomeScreen({ onOtpSent, onSignUp }: { onOtpSent: (email: string) => void; onSignUp: () => void }) {
+  const [email, setEmail] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
   async function sendOtp() {
-    if (!phone.startsWith('+')) return setError('Enter the phone number with country code, for example +91 98765 43210.');
+    if (!isValidEmail(email)) return setError('Enter a valid email address.');
     setLoading(true); setError('');
-    const normalizedPhone = compactPhone(phone);
-    const { error: authError } = await supabase.auth.signInWithOtp({ phone: normalizedPhone });
+    const normalizedEmail = email.trim().toLowerCase();
+    const { error: authError } = await supabase.auth.signInWithOtp({
+      email: normalizedEmail,
+      options: { shouldCreateUser: false },
+    });
     setLoading(false);
     if (authError) return setError(authError.message);
-    onOtpSent(normalizedPhone);
+    onOtpSent(normalizedEmail);
   }
 
   async function signInWithGoogle() {
@@ -106,8 +109,8 @@ function WelcomeScreen({ onOtpSent, onSignUp }: { onOtpSent: (phone: string) => 
       <Text style={styles.heading}>Welcome to Ayurnidaan</Text>
       <Text style={styles.copy}>Personalized health guidance combining Ayurveda, modern health information and AI.</Text>
       <View style={styles.card}>
-        <Field label="Phone number" value={phone} onChangeText={setPhone} placeholder="+91 98765 43210" keyboardType="phone-pad" />
-        <PrimaryButton label="Continue with OTP" loading={loading} onPress={sendOtp} />
+        <Field label="Email address" value={email} onChangeText={setEmail} placeholder="you@example.com" keyboardType="email-address" autoCapitalize="none" autoComplete="email" />
+        <PrimaryButton label="Email me a code" loading={loading} onPress={sendOtp} />
         <View style={styles.dividerRow}><View style={styles.divider} /><Text style={styles.dividerText}>OR</Text><View style={styles.divider} /></View>
         <SecondaryButton label="Continue with Google" onPress={signInWithGoogle} />
         {error ? <Text style={styles.error}>{error}</Text> : null}
@@ -117,20 +120,23 @@ function WelcomeScreen({ onOtpSent, onSignUp }: { onOtpSent: (phone: string) => 
   );
 }
 
-function SignUpScreen({ onBack, onOtpSent }: { onBack: () => void; onOtpSent: (phone: string) => void }) {
-  const [name, setName] = useState(''); const [phone, setPhone] = useState(''); const [password, setPassword] = useState('');
+function SignUpScreen({ onBack, onOtpSent }: { onBack: () => void; onOtpSent: (email: string) => void }) {
+  const [name, setName] = useState(''); const [email, setEmail] = useState('');
   const [accepted, setAccepted] = useState(false); const [loading, setLoading] = useState(false); const [error, setError] = useState('');
   async function signUp() {
-    if (!name.trim() || !phone.startsWith('+') || password.length < 8 || !accepted) return setError('Enter your name, a phone number with country code, an 8-character password, and accept the policies.');
+    if (!name.trim() || !isValidEmail(email) || !accepted) return setError('Enter your name and a valid email address, then accept the policies.');
     setLoading(true); setError('');
-    const normalizedPhone = compactPhone(phone);
-    const { error: authError } = await supabase.auth.signUp({
-      phone: normalizedPhone, password,
-      options: { data: { full_name: name.trim(), terms_accepted_at: new Date().toISOString() } },
+    const normalizedEmail = email.trim().toLowerCase();
+    const { error: authError } = await supabase.auth.signInWithOtp({
+      email: normalizedEmail,
+      options: {
+        shouldCreateUser: true,
+        data: { full_name: name.trim(), terms_accepted_at: new Date().toISOString() },
+      },
     });
     setLoading(false);
     if (authError) return setError(authError.message);
-    onOtpSent(normalizedPhone);
+    onOtpSent(normalizedEmail);
   }
   return (
     <ScreenFrame scroll>
@@ -139,25 +145,24 @@ function SignUpScreen({ onBack, onOtpSent }: { onBack: () => void; onOtpSent: (p
       <Text style={styles.copy}>Start with the essentials. Your health profile comes next.</Text>
       <View style={styles.card}>
         <Field label="Full name" value={name} onChangeText={setName} placeholder="Your name" />
-        <Field label="Phone number" value={phone} onChangeText={setPhone} placeholder="+91 98765 43210" keyboardType="phone-pad" />
-        <Field label="Password" value={password} onChangeText={setPassword} placeholder="At least 8 characters" secureTextEntry />
+        <Field label="Email address" value={email} onChangeText={setEmail} placeholder="you@example.com" keyboardType="email-address" autoCapitalize="none" autoComplete="email" />
         <Pressable style={styles.checkRow} onPress={() => setAccepted((value) => !value)}>
           <View style={[styles.checkbox, accepted && styles.checkboxSelected]}>{accepted ? <Text style={styles.checkmark}>✓</Text> : null}</View>
           <Text style={styles.terms}>I accept the <Text style={styles.link}>Terms of Use</Text> and <Text style={styles.link}>Privacy Policy</Text>.</Text>
         </Pressable>
-        <PrimaryButton label="Create account" loading={loading} onPress={signUp} />
+        <PrimaryButton label="Create account with email OTP" loading={loading} onPress={signUp} />
         {error ? <Text style={styles.error}>{error}</Text> : null}
       </View>
     </ScreenFrame>
   );
 }
 
-function VerifyOtpScreen({ phone, purpose, onBack, onVerified }: { phone: string; purpose: OtpPurpose; onBack: () => void; onVerified: () => void }) {
+function VerifyOtpScreen({ email, purpose, onBack, onVerified }: { email: string; purpose: OtpPurpose; onBack: () => void; onVerified: () => void }) {
   const [token, setToken] = useState(''); const [loading, setLoading] = useState(false); const [error, setError] = useState('');
   async function verify() {
     if (token.length !== 6) return setError('Enter the six-digit code.');
     setLoading(true); setError('');
-    const { error: authError } = await supabase.auth.verifyOtp({ phone, token, type: 'sms' });
+    const { error: authError } = await supabase.auth.verifyOtp({ email, token, type: 'email' });
     setLoading(false);
     if (authError) return setError(authError.message);
     onVerified();
@@ -165,7 +170,7 @@ function VerifyOtpScreen({ phone, purpose, onBack, onVerified }: { phone: string
   return (
     <ScreenFrame>
       <BackButton onPress={onBack} /><Text style={styles.heading}>Verify your number</Text>
-      <Text style={styles.copy}>Enter the code sent to {phone}. This will {purpose === 'signup' ? 'confirm your new account' : 'sign you in'}.</Text>
+      <Text style={styles.copy}>Enter the code sent to {email}. This will {purpose === 'signup' ? 'confirm your new account' : 'sign you in'}.</Text>
       <View style={styles.card}>
         <TextInput accessibilityLabel="One-time password" keyboardType="number-pad" maxLength={6} onChangeText={setToken} placeholder="000000" placeholderTextColor="#93A29D" style={[styles.input, styles.otpInput]} value={token} />
         <PrimaryButton label="Verify and continue" loading={loading} onPress={verify} />
@@ -220,7 +225,7 @@ function Field({ label, ...props }: React.ComponentProps<typeof TextInput> & { l
 function PrimaryButton({ label, loading, onPress }: { label: string; loading?: boolean; onPress: () => void }) { return <Pressable disabled={loading} onPress={onPress} style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}>{loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>{label}</Text>}</Pressable>; }
 function SecondaryButton({ label, onPress }: { label: string; onPress: () => void }) { return <Pressable onPress={onPress} style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}><Text style={styles.secondaryButtonText}>{label}</Text></Pressable>; }
 function BackButton({ onPress }: { onPress: () => void }) { return <Pressable onPress={onPress} style={styles.backButton}><Text style={styles.backButtonText}>‹ Back</Text></Pressable>; }
-function compactPhone(value: string) { return value.replace(/[\s()-]/g, ''); }
+function isValidEmail(value: string) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim()); }
 function extractAuthParams(url: string) { const fragment = url.split('#')[1] ?? url.split('?')[1] ?? ''; return Object.fromEntries(new URLSearchParams(fragment)); }
 
 const styles = StyleSheet.create({
