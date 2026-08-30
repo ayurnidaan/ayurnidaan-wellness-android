@@ -4,23 +4,35 @@ const isDevelopment = process.env.APP_VARIANT === 'development';
 
 export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
-  name: isDevelopment ? 'App Build (Dev)' : 'App Build',
-  slug: 'app-build',
+  name: isDevelopment ? 'Ayurnidaan (Dev)' : 'Ayurnidaan',
+  slug: 'ayurnidaan',
   version: '1.0.0',
   orientation: 'portrait',
-  icon: './assets/icon.png',
+  icon: './assets/ayurnidaan-logo.png',
   userInterfaceStyle: 'light',
-  scheme: isDevelopment ? 'appbuild-dev' : 'appbuild',
+  scheme: isDevelopment ? 'ayurnidaan-dev' : 'ayurnidaan',
+  plugins: [
+    'expo-web-browser',
+    [
+      'expo-splash-screen',
+      {
+        backgroundColor: '#F8F4E8',
+        image: './assets/ayurnidaan-logo.png',
+        imageWidth: 220,
+        resizeMode: 'contain',
+      },
+    ],
+  ],
   ios: {
     supportsTablet: true,
     bundleIdentifier: isDevelopment
-      ? 'com.yourcompany.appbuild.dev'
-      : 'com.yourcompany.appbuild',
+      ? 'com.ayurnidaan.wellness.dev'
+      : 'com.ayurnidaan.wellness',
   },
   android: {
     package: isDevelopment
-      ? 'com.yourcompany.appbuild.dev'
-      : 'com.yourcompany.appbuild',
+      ? 'com.ayurnidaan.wellness.dev'
+      : 'com.ayurnidaan.wellness',
     adaptiveIcon: {
       backgroundColor: '#E6F4FE',
       foregroundImage: './assets/android-icon-foreground.png',
