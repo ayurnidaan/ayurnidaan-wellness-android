@@ -1,6 +1,8 @@
 import type { ExpoConfig, ConfigContext } from 'expo/config';
 
-const isDevelopment = process.env.APP_VARIANT === 'development';
+const isDevelopment =
+  process.env.APP_VARIANT === 'development' ||
+  process.env.EXPO_PUBLIC_APP_ENV === 'development';
 
 export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,

@@ -1,40 +1,39 @@
-# App Build
+# Ayurnidaan Wellness Android
 
-React Native + Expo application using Supabase for the database and authentication.
+Ayurnidaan is a React Native and Expo application using Supabase for its database, authentication, and storage.
 
-## Environment model
+## Environments
 
-Use two independent Supabase projects:
+| Git branch | Supabase project | Expo environment | Purpose |
+| --- | --- | --- | --- |
+| `dev` | `ayurnidaan-dev` | `development` | Development and internal testing |
+| `prod` | `ayurnidaan-prod` | `production` | Store releases and real users |
 
-- **Development**: local development, preview builds, test data, and test users.
-- **Production**: App Store/Play Store releases and real user data.
+The projects have independent databases, authentication users, storage, URLs, and API keys. Database structures are kept aligned through migrations in `supabase/migrations`.
 
-Do not reuse one Supabase project for both environments. Keep database schemas in sync through versioned Supabase migrations, while data and auth users remain isolated.
+Changes are developed and verified on `dev`. After approval, merge `dev` into `prod` to deploy the same versioned migrations and application code to production. Do not develop directly on `prod`.
 
-The development and production apps also have different bundle/package IDs, so they can be installed on the same device. Replace `com.yourcompany.appbuild` in `app.config.ts` with the final reverse-domain identifier before the first store build.
+## Local development
 
-## Local development setup
-
-1. Install Node.js 22 LTS (the version is recorded in `.nvmrc`).
+1. Install Node.js 22 LTS. The expected version is recorded in `.nvmrc`.
 2. Run `npm install`.
-3. Create a second Supabase project for development if the existing project is intended for production.
-4. Copy `.env.example` to `.env.local`.
-5. In the development Supabase dashboard, open **Project Settings > API** and put the project URL and publishable/anon key in `.env.local`.
-6. Run `npm start` and open the project in Expo Go, or create a development build.
+3. Copy `.env.example` to `.env.local`.
+4. Add the `ayurnidaan-dev` project URL and publishable key to `.env.local`.
+5. Run `npx expo start --go` for Expo Go.
 
-Only the publishable/anon key belongs in the mobile app. Never add the Supabase `service_role` key or database password. Supabase Row Level Security must protect every table exposed to the app.
+Local environment files are excluded from Git. Never place a Supabase secret/service-role key or database password in the mobile application.
 
-## EAS cloud environments
+## Expo/EAS environments
 
-After signing in to Expo and running `eas init`, create these variables in both the `development` and `production` EAS environments:
+Create the following variables in both the EAS `development` and `production` environments:
 
 - `EXPO_PUBLIC_APP_ENV`
 - `EXPO_PUBLIC_SUPABASE_URL`
 - `EXPO_PUBLIC_SUPABASE_ANON_KEY`
 
-Use development Supabase values for the EAS development environment and production values for production. These client values are embedded in the application and should use **plain text** or **sensitive** visibility, not secret visibility.
+Use `ayurnidaan-dev` values in development and `ayurnidaan-prod` values in production. These client-side values are embedded in the application; use plain-text or sensitive visibility, not secret visibility.
 
-Build commands:
+Build profiles are defined in `eas.json`:
 
 ```text
 eas build --profile development
@@ -42,15 +41,13 @@ eas build --profile preview
 eas build --profile production
 ```
 
-## GitHub connection
+## Application identities
 
-This directory is initialized as a Git repository but has no remote yet. To connect the repository you created:
+- Development: `com.ayurnidaan.wellness.dev`
+- Production: `com.ayurnidaan.wellness`
 
-```text
-git remote add origin YOUR_GITHUB_REPOSITORY_URL
-git add .
-git commit -m "Set up Expo and Supabase environments"
-git push -u origin master
-```
+The separate identifiers allow development and production builds to be installed on the same device.
 
-If your GitHub repository uses `main`, rename the local branch before pushing with `git branch -M main`.
+## Database changes
+
+Every schema change must be represented by a migration in `supabase/migrations`. Row Level Security is required for tables accessible from the application. Migrations reach `ayurnidaan-dev` from the `dev` branch and reach `ayurnidaan-prod` only after promotion to `prod`.
