@@ -1,60 +1,36 @@
 import { useEffect, useRef, useState } from 'react';
-import {
-  ActivityIndicator, Animated, Image, KeyboardAvoidingView, Platform,
-  Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View,
-} from 'react-native';
+import { ActivityIndicator, Animated, Image, KeyboardAvoidingView, Platform, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import * as AuthSession from 'expo-auth-session';
 import * as WebBrowser from 'expo-web-browser';
 import type { Session } from '@supabase/supabase-js';
-
 import { supabase } from './src/lib/supabase';
 import { colors } from './src/theme';
 
 WebBrowser.maybeCompleteAuthSession();
-
-type Screen = 'splash' | 'welcome' | 'account' | 'profile' | 'home';
+type Screen = 'splash' | 'intro' | 'auth' | 'account' | 'profile' | 'home';
 const logo = require('./assets/ayurnidaan-logo.png');
 
 export default function App() {
   const [screen, setScreen] = useState<Screen>('splash');
   const [session, setSession] = useState<Session | null>(null);
-
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
-    const { data } = supabase.auth.onAuthStateChange((_event, nextSession) => {
-      setSession(nextSession);
-      if (!nextSession && screen !== 'splash') setScreen('welcome');
-    });
+    const { data } = supabase.auth.onAuthStateChange((_event, nextSession) => setSession(nextSession));
     return () => data.subscription.unsubscribe();
   }, []);
-
-  async function continueFromSplash() {
-    if (!session) return setScreen('welcome');
-    await routeAuthenticatedUser(session);
+  async function routeUser(currentSession: Session) {
+    const { data } = await supabase.from('profiles').select('profile_completed_at').eq('user_id', currentSession.user.id).maybeSingle();
+    setScreen(data?.profile_completed_at ? 'home' : 'account');
   }
-
-  async function routeAuthenticatedUser(currentSession: Session) {
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('profile_completed_at')
-      .eq('user_id', currentSession.user.id)
-      .maybeSingle();
-    setScreen(profile?.profile_completed_at ? 'home' : 'account');
-  }
-
-  async function handleAuthenticated(nextSession: Session) {
-    setSession(nextSession);
-    await routeAuthenticatedUser(nextSession);
-  }
-
-  if (screen === 'splash') return <BrandSplash onFinish={continueFromSplash} />;
-  if (screen === 'welcome') {
-    return <WelcomeScreen onAuthenticated={handleAuthenticated} />;
-  }
-  if (screen === 'account') return <AccountSetupScreen session={session} onComplete={() => setScreen('profile')} />;
+  async function finishSplash() { if (session) await routeUser(session); else setScreen('intro'); }
+  async function authenticated(nextSession: Session) { setSession(nextSession); await routeUser(nextSession); }
+  if (screen === 'splash') return <BrandSplash onFinish={finishSplash} />;
+  if (screen === 'intro') return <IntroScreen onContinue={() => setScreen('auth')} />;
+  if (screen === 'auth') return <AuthScreen onBack={() => setScreen('intro')} onAuthenticated={authenticated} />;
+  if (screen === 'account') return <AccountScreen session={session} onComplete={() => setScreen('profile')} />;
   if (screen === 'profile') return <ProfileScreen session={session} onComplete={() => setScreen('home')} />;
-  return <HomeScreen onSignOut={() => setScreen('welcome')} />;
+  return <HomeScreen onSignOut={() => setScreen('intro')} />;
 }
 
 function BrandSplash({ onFinish }: { onFinish: () => void }) {
@@ -62,167 +38,152 @@ function BrandSplash({ onFinish }: { onFinish: () => void }) {
   const [ready, setReady] = useState(false);
   const [leaving, setLeaving] = useState(false);
   useEffect(() => {
-    Animated.timing(opacity, { toValue: 1, duration: 650, useNativeDriver: true }).start();
+    Animated.timing(opacity, { toValue: 1, duration: 700, useNativeDriver: true }).start();
     const timer = setTimeout(() => setReady(true), 1200);
     return () => clearTimeout(timer);
   }, [opacity]);
-
   function continueOnTap() {
     if (!ready || leaving) return;
     setLeaving(true);
     Animated.timing(opacity, { toValue: 0, duration: 350, useNativeDriver: true }).start(onFinish);
   }
-
-  return (
-    <Pressable accessibilityRole="button" accessibilityLabel="Continue" disabled={!ready || leaving} onPress={continueOnTap} style={styles.brandSplash}>
-      <StatusBar style="dark" />
-      <Animated.View style={[styles.brandBlock, { opacity }]}>
-        <Image source={logo} style={styles.logoLarge} resizeMode="contain" />
-        <Text style={styles.brandName}>Ayurnidaan</Text>
-        <Text style={styles.brandSubtitle}>AI-powered Ayurveda for Personalized Health</Text>
-        {ready ? <Text style={styles.tapHint}>Tap anywhere to continue</Text> : null}
-      </Animated.View>
-    </Pressable>
-  );
+  return <Pressable accessibilityRole="button" accessibilityLabel="Continue" disabled={!ready || leaving} onPress={continueOnTap} style={styles.splash}>
+    <StatusBar style="light" /><BotanicalCorner />
+    <Animated.View style={[styles.splashContent, { opacity }]}>
+      <View style={styles.splashLogoPanel}><Image source={logo} style={styles.splashLogo} resizeMode="contain" /></View>
+      <Text style={styles.splashSubtitle}>AI-Powered Ayurveda{`\n`}for Personalized Health</Text>
+      {ready ? <Text style={styles.splashTap}>Tap anywhere to continue</Text> : null}
+    </Animated.View>
+  </Pressable>;
 }
 
-function WelcomeScreen({ onAuthenticated }: { onAuthenticated: (session: Session) => Promise<void> }) {
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
+function IntroScreen({ onContinue }: { onContinue: () => void }) {
+  return <ScreenFrame>
+    <View style={styles.introTop}>
+      <Text style={styles.introKicker}>Welcome to</Text><Text style={styles.introTitle}>Ayurnidaan</Text>
+      <Text style={styles.introCopy}>Your personalized health journey begins here.</Text>
+    </View>
+    <View style={styles.herbArt}>
+      <View style={styles.sunDisc} /><View style={styles.bowl}><View style={styles.bowlRim} /></View>
+      <View style={[styles.stem, { transform: [{ rotate: '-20deg' }] }]} /><View style={[styles.stem, styles.stemRight, { transform: [{ rotate: '22deg' }] }]} />
+      <View style={[styles.leaf, styles.leaf1]} /><View style={[styles.leaf, styles.leaf2]} /><View style={[styles.leaf, styles.leaf3]} /><View style={[styles.leaf, styles.leaf4]} />
+    </View>
+    <View style={styles.introActions}><PrimaryButton label="Get Started" onPress={onContinue} />
+      <Pressable onPress={onContinue} style={styles.loginLink}><Text style={styles.muted}>Already have an account? <Text style={styles.link}>Log in</Text></Text></Pressable>
+    </View>
+  </ScreenFrame>;
+}
 
+function AuthScreen({ onBack, onAuthenticated }: { onBack: () => void; onAuthenticated: (session: Session) => Promise<void> }) {
+  const [mobile, setMobile] = useState(''); const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(''); const [notice, setNotice] = useState('');
+  function comingSoon(method: string) { setError(''); setNotice(`${method} sign-in is coming soon. Please continue with Google for now.`); }
   async function signInWithGoogle() {
-    setLoading(true); setError('');
+    setLoading(true); setError(''); setNotice('');
     const redirectTo = AuthSession.makeRedirectUri({ path: 'auth/callback' });
-    const { data, error: authError } = await supabase.auth.signInWithOAuth({
-      provider: 'google', options: { redirectTo, skipBrowserRedirect: true },
-    });
-    if (authError || !data.url) { setLoading(false); return setError(authError?.message ?? 'Could not start Google sign-in.'); }
+    const { data, error: startError } = await supabase.auth.signInWithOAuth({ provider: 'google', options: { redirectTo, skipBrowserRedirect: true } });
+    if (startError || !data.url) { setLoading(false); return setError(startError?.message ?? 'Could not start Google sign-in.'); }
     const result = await WebBrowser.openAuthSessionAsync(data.url, redirectTo);
     if (result.type === 'success') {
       const params = extractAuthParams(result.url);
       if (params.access_token && params.refresh_token) {
-        const { data: sessionData, error: sessionError } = await supabase.auth.setSession({ access_token: params.access_token, refresh_token: params.refresh_token });
+        const { data: resultData, error: sessionError } = await supabase.auth.setSession({ access_token: params.access_token, refresh_token: params.refresh_token });
         if (sessionError) setError(sessionError.message);
-        if (sessionData.session) await onAuthenticated(sessionData.session);
+        if (resultData.session) await onAuthenticated(resultData.session);
       }
     }
     setLoading(false);
   }
-
-  return (
-    <ScreenFrame>
-      <Image source={logo} style={styles.logoSmall} resizeMode="contain" />
-      <Text style={styles.heading}>Welcome to Ayurnidaan</Text>
-      <Text style={styles.copy}>Personalized health guidance combining Ayurveda, modern health information and AI.</Text>
-      <View style={styles.card}>
-        <PrimaryButton label="Continue with Google" loading={loading} onPress={signInWithGoogle} />
-        {error ? <Text style={styles.error}>{error}</Text> : null}
-      </View>
-    </ScreenFrame>
-  );
+  return <ScreenFrame scroll alignTop>
+    <BackButton onPress={onBack} /><Text style={styles.pageTitle}>Login / Sign up</Text>
+    <Text style={styles.pageSubtitle}>Enter your mobile number to continue</Text>
+    <View style={styles.form}><Field label="Mobile Number" value={mobile} onChangeText={setMobile} placeholder="+91 98765 43210" keyboardType="phone-pad" />
+      <PrimaryButton label="Continue" onPress={() => comingSoon('Mobile number')} />
+    </View>
+    <Divider label="or continue with" />
+    <View style={styles.socialRow}>
+      <SocialButton symbol="G" label="Google" loading={loading} onPress={signInWithGoogle} />
+      <SocialButton symbol="●" label="Apple" onPress={() => comingSoon('Apple')} />
+      <SocialButton symbol="✉" label="Email" onPress={() => comingSoon('Email')} />
+    </View>
+    {notice ? <Text style={styles.notice}>{notice}</Text> : null}{error ? <Text style={styles.error}>{error}</Text> : null}
+    <Text style={styles.policy}>By continuing, you agree to Ayurnidaan's <Text style={styles.link}>Terms of Use</Text> and <Text style={styles.link}>Privacy Policy</Text>.</Text>
+  </ScreenFrame>;
 }
 
-function AccountSetupScreen({ session, onComplete }: { session: Session | null; onComplete: () => void }) {
-  const [name, setName] = useState('');
-  const [accepted, setAccepted] = useState(false); const [loading, setLoading] = useState(false); const [error, setError] = useState('');
-
-  async function saveAccountDetails() {
+function AccountScreen({ session, onComplete }: { session: Session | null; onComplete: () => void }) {
+  const [name, setName] = useState(''); const [accepted, setAccepted] = useState(false);
+  const [loading, setLoading] = useState(false); const [error, setError] = useState('');
+  async function save() {
     if (!session?.user.id) return setError('Please sign in again.');
     if (!name.trim() || !accepted) return setError('Enter your name and accept the policies.');
-    setLoading(true); setError('');
-    const acceptedAt = new Date().toISOString();
-    const { error: authError } = await supabase.auth.updateUser({
-      data: { full_name: name.trim(), terms_accepted_at: acceptedAt },
-    });
-    const { error: profileError } = await supabase.from('profiles').upsert({
-      user_id: session.user.id,
-      full_name: name.trim(),
-      terms_accepted_at: acceptedAt,
-    });
-    setLoading(false);
-    if (authError) return setError(authError.message);
-    if (profileError) return setError(profileError.message);
-    onComplete();
+    setLoading(true); setError(''); const acceptedAt = new Date().toISOString();
+    const { error: authError } = await supabase.auth.updateUser({ data: { full_name: name.trim(), terms_accepted_at: acceptedAt } });
+    const { error: profileError } = await supabase.from('profiles').upsert({ user_id: session.user.id, full_name: name.trim(), terms_accepted_at: acceptedAt });
+    setLoading(false); if (authError) return setError(authError.message); if (profileError) return setError(profileError.message); onComplete();
   }
-  return (
-    <ScreenFrame>
-      <Text style={styles.eyebrow}>LET'S GET STARTED</Text>
-      <Text style={styles.heading}>What should we call you?</Text>
-      <Text style={styles.copy}>Tell us your name before creating your personalized health profile.</Text>
-      <View style={styles.card}>
-        <Field label="Full name" value={name} onChangeText={setName} placeholder="Your name" />
-        <Pressable style={styles.checkRow} onPress={() => setAccepted((value) => !value)}>
-          <View style={[styles.checkbox, accepted && styles.checkboxSelected]}>{accepted ? <Text style={styles.checkmark}>✓</Text> : null}</View>
-          <Text style={styles.terms}>I accept the <Text style={styles.link}>Terms of Use</Text> and <Text style={styles.link}>Privacy Policy</Text>.</Text>
-        </Pressable>
-        <PrimaryButton label="Continue" loading={loading} onPress={saveAccountDetails} />
-        {error ? <Text style={styles.error}>{error}</Text> : null}
-      </View>
-    </ScreenFrame>
-  );
+  return <ScreenFrame scroll alignTop>
+    <Text style={styles.step}>STEP 1 OF 2</Text><Text style={styles.pageTitle}>Tell us about you</Text><Text style={styles.pageSubtitle}>Let's start with your name</Text>
+    <View style={styles.form}><Field label="Full Name" value={name} onChangeText={setName} placeholder="Your name" autoCapitalize="words" autoComplete="name" />
+      <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: accepted }} style={styles.checkRow} onPress={() => setAccepted(!accepted)}>
+        <View style={[styles.checkbox, accepted && styles.checkboxSelected]}>{accepted ? <Text style={styles.checkmark}>✓</Text> : null}</View>
+        <Text style={styles.terms}>I accept the <Text style={styles.link}>Terms of Use</Text> and <Text style={styles.link}>Privacy Policy</Text>.</Text>
+      </Pressable>
+      <PrimaryButton label="Continue" loading={loading} onPress={save} />{error ? <Text style={styles.error}>{error}</Text> : null}
+    </View>
+  </ScreenFrame>;
 }
 
 function ProfileScreen({ session, onComplete }: { session: Session | null; onComplete: () => void }) {
-  const [dateOfBirth, setDateOfBirth] = useState(''); const [sex, setSex] = useState<'male' | 'female' | null>(null);
-  const [height, setHeight] = useState(''); const [weight, setWeight] = useState(''); const [loading, setLoading] = useState(false); const [error, setError] = useState('');
-  async function saveProfile() {
+  const [dob, setDob] = useState(''); const [sex, setSex] = useState<'male' | 'female' | null>(null);
+  const [height, setHeight] = useState(''); const [weight, setWeight] = useState('');
+  const [loading, setLoading] = useState(false); const [error, setError] = useState('');
+  async function save() {
     if (!session?.user.id) return setError('Please sign in again.');
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateOfBirth) || !sex || !Number(height) || !Number(weight)) return setError('Complete every field. Use YYYY-MM-DD for date of birth.');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dob) || !sex || !Number(height) || !Number(weight)) return setError('Complete every field. Use YYYY-MM-DD for date of birth.');
     setLoading(true); setError('');
-    const { error: profileError } = await supabase.from('profiles').upsert({
-      user_id: session.user.id, full_name: session.user.user_metadata.full_name ?? null,
-      date_of_birth: dateOfBirth, sex, height_cm: Number(height), weight_kg: Number(weight), profile_completed_at: new Date().toISOString(),
-    });
-    setLoading(false);
-    if (profileError) return setError(profileError.message);
-    onComplete();
+    const { error: saveError } = await supabase.from('profiles').upsert({ user_id: session.user.id, full_name: session.user.user_metadata.full_name ?? null, date_of_birth: dob, sex, height_cm: Number(height), weight_kg: Number(weight), profile_completed_at: new Date().toISOString() });
+    setLoading(false); if (saveError) return setError(saveError.message); onComplete();
   }
-  return (
-    <ScreenFrame scroll>
-      <Text style={styles.eyebrow}>ONE LAST STEP</Text><Text style={styles.heading}>Create your health profile</Text>
-      <Text style={styles.copy}>These details help personalize your wellness guidance.</Text>
-      <View style={styles.card}>
-        <Field label="Date of birth" value={dateOfBirth} onChangeText={setDateOfBirth} placeholder="YYYY-MM-DD" />
-        <Text style={styles.label}>Sex</Text>
-        <View style={styles.choiceRow}>{(['male', 'female'] as const).map((value) => <Pressable key={value} onPress={() => setSex(value)} style={[styles.choice, sex === value && styles.choiceSelected]}><Text style={[styles.choiceText, sex === value && styles.choiceTextSelected]}>{value === 'male' ? 'Male' : 'Female'}</Text></Pressable>)}</View>
-        <View style={styles.measureRow}><View style={styles.measureField}><Field label="Height (cm)" value={height} onChangeText={setHeight} placeholder="170" keyboardType="decimal-pad" /></View><View style={styles.measureField}><Field label="Weight (kg)" value={weight} onChangeText={setWeight} placeholder="65" keyboardType="decimal-pad" /></View></View>
-        <PrimaryButton label="Complete profile" loading={loading} onPress={saveProfile} />
-        <Text style={styles.privacyNote}>Your health information is private and protected.</Text>
-        {error ? <Text style={styles.error}>{error}</Text> : null}
-      </View>
-    </ScreenFrame>
-  );
+  return <ScreenFrame scroll alignTop>
+    <Text style={styles.step}>STEP 2 OF 2</Text><Text style={styles.pageTitle}>Basic Profile</Text><Text style={styles.pageSubtitle}>Tell us a few basic details</Text>
+    <View style={styles.form}><Field label="Date of Birth" value={dob} onChangeText={setDob} placeholder="YYYY-MM-DD" />
+      <Text style={styles.label}>Sex</Text><View style={styles.choiceRow}>{(['male', 'female'] as const).map(value => <Pressable key={value} onPress={() => setSex(value)} style={[styles.choice, sex === value && styles.choiceSelected]}><Text style={[styles.choiceText, sex === value && styles.choiceTextSelected]}>{value === 'male' ? 'Male' : 'Female'}</Text></Pressable>)}</View>
+      <View style={styles.measureRow}><View style={styles.measureField}><Field label="Height (cm)" value={height} onChangeText={setHeight} placeholder="175" keyboardType="decimal-pad" /></View><View style={styles.measureField}><Field label="Weight (kg)" value={weight} onChangeText={setWeight} placeholder="70" keyboardType="decimal-pad" /></View></View>
+      <PrimaryButton label="Continue" loading={loading} onPress={save} /><Text style={styles.privacy}>Your health information is private and protected.</Text>{error ? <Text style={styles.error}>{error}</Text> : null}
+    </View>
+  </ScreenFrame>;
 }
 
 function HomeScreen({ onSignOut }: { onSignOut: () => void }) {
   async function signOut() { await supabase.auth.signOut(); onSignOut(); }
-  return <ScreenFrame><Image source={logo} style={styles.logoSmall} resizeMode="contain" /><Text style={styles.heading}>Your wellness journey starts here</Text><Text style={styles.copy}>Your Ayurnidaan home experience is ready to be built.</Text><SecondaryButton label="Sign out" onPress={signOut} /></ScreenFrame>;
+  return <ScreenFrame><Image source={logo} style={styles.homeLogo} resizeMode="contain" /><Text style={styles.pageTitle}>Your wellness journey starts here</Text><Text style={styles.pageSubtitle}>Your Ayurnidaan home experience is ready to be built.</Text><SecondaryButton label="Sign out" onPress={signOut} /></ScreenFrame>;
 }
 
-function ScreenFrame({ children, scroll = false }: { children: React.ReactNode; scroll?: boolean }) {
-  const content = <View style={styles.screenContent}>{children}</View>;
-  return <SafeAreaView style={styles.safeArea}><StatusBar style="dark" /><KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>{scroll ? <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">{content}</ScrollView> : content}</KeyboardAvoidingView></SafeAreaView>;
+function ScreenFrame({ children, scroll = false, alignTop = false }: { children: React.ReactNode; scroll?: boolean; alignTop?: boolean }) {
+  const content = <View style={[styles.content, alignTop && styles.contentTop]}>{children}</View>;
+  return <SafeAreaView style={styles.safe}><StatusBar style="dark" /><KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>{scroll ? <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">{content}</ScrollView> : content}</KeyboardAvoidingView></SafeAreaView>;
 }
-function Field({ label, ...props }: React.ComponentProps<typeof TextInput> & { label: string }) { return <View><Text style={styles.label}>{label}</Text><TextInput placeholderTextColor="#93A29D" style={styles.input} {...props} /></View>; }
-function PrimaryButton({ label, loading, onPress }: { label: string; loading?: boolean; onPress: () => void }) { return <Pressable disabled={loading} onPress={onPress} style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}>{loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>{label}</Text>}</Pressable>; }
-function SecondaryButton({ label, onPress }: { label: string; onPress: () => void }) { return <Pressable onPress={onPress} style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}><Text style={styles.secondaryButtonText}>{label}</Text></Pressable>; }
+function BotanicalCorner() { return <View pointerEvents="none" style={styles.corner}><View style={styles.cornerStem} /><View style={[styles.cornerLeaf, styles.cornerLeaf1]} /><View style={[styles.cornerLeaf, styles.cornerLeaf2]} /><View style={[styles.cornerLeaf, styles.cornerLeaf3]} /></View>; }
+function Field({ label, ...props }: React.ComponentProps<typeof TextInput> & { label: string }) { return <View><Text style={styles.label}>{label}</Text><TextInput placeholderTextColor="#9A9B92" style={styles.input} {...props} /></View>; }
+function PrimaryButton({ label, loading, onPress }: { label: string; loading?: boolean; onPress: () => void }) { return <Pressable disabled={loading} onPress={onPress} style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}>{loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>{label}</Text>}</Pressable>; }
+function SecondaryButton({ label, onPress }: { label: string; onPress: () => void }) { return <Pressable onPress={onPress} style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}><Text style={styles.secondaryText}>{label}</Text></Pressable>; }
+function SocialButton({ symbol, label, loading, onPress }: { symbol: string; label: string; loading?: boolean; onPress: () => void }) { return <Pressable accessibilityLabel={`Continue with ${label}`} disabled={loading} onPress={onPress} style={({ pressed }) => [styles.socialButton, pressed && styles.pressed]}>{loading ? <ActivityIndicator color={colors.primaryDark} /> : <Text style={[styles.socialSymbol, label === 'Google' && styles.google]}>{symbol}</Text>}<Text style={styles.socialLabel}>{label}</Text></Pressable>; }
+function Divider({ label }: { label: string }) { return <View style={styles.dividerRow}><View style={styles.divider} /><Text style={styles.dividerText}>{label}</Text><View style={styles.divider} /></View>; }
+function BackButton({ onPress }: { onPress: () => void }) { return <Pressable accessibilityLabel="Go back" onPress={onPress} style={styles.back}><Text style={styles.backText}>‹</Text></Pressable>; }
 function extractAuthParams(url: string) { const fragment = url.split('#')[1] ?? url.split('?')[1] ?? ''; return Object.fromEntries(new URLSearchParams(fragment)); }
 
+const serif = Platform.select({ ios: 'Georgia', android: 'serif' });
 const styles = StyleSheet.create({
-  flex: { flex: 1 }, safeArea: { flex: 1, backgroundColor: colors.background }, scrollContent: { flexGrow: 1 },
-  screenContent: { flex: 1, justifyContent: 'center', paddingHorizontal: 24, paddingVertical: 32 },
-  brandSplash: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background }, brandBlock: { alignItems: 'center', paddingHorizontal: 28 },
-  logoLarge: { width: 230, height: 150 }, logoSmall: { width: 150, height: 96, alignSelf: 'center', marginBottom: 12 },
-  brandName: { color: colors.primary, fontSize: 36, fontWeight: '700', letterSpacing: 0.5, marginTop: 8 }, brandSubtitle: { color: colors.text, fontSize: 15, lineHeight: 22, textAlign: 'center', marginTop: 8 },
-  tapHint: { color: colors.muted, fontSize: 13, marginTop: 34 },
-  eyebrow: { color: colors.gold, fontSize: 12, fontWeight: '700', letterSpacing: 1.5, textAlign: 'center', marginBottom: 8 }, heading: { color: colors.text, fontSize: 29, fontWeight: '700', lineHeight: 36, textAlign: 'center' },
-  copy: { color: colors.muted, fontSize: 15, lineHeight: 23, textAlign: 'center', marginTop: 10, marginBottom: 24 },
-  card: { backgroundColor: colors.surface, borderColor: '#EEE8DA', borderRadius: 24, borderWidth: 1, gap: 14, padding: 20, shadowColor: '#17352E', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.08, shadowRadius: 22, elevation: 3 },
-  label: { color: colors.text, fontSize: 13, fontWeight: '600', marginBottom: 7 }, input: { backgroundColor: '#FBFCFB', borderColor: colors.border, borderRadius: 14, borderWidth: 1, color: colors.text, fontSize: 16, minHeight: 52, paddingHorizontal: 15 },
-  otpInput: { fontSize: 26, fontWeight: '700', letterSpacing: 10, textAlign: 'center' }, primaryButton: { alignItems: 'center', backgroundColor: colors.primary, borderRadius: 14, justifyContent: 'center', minHeight: 52, paddingHorizontal: 18 }, primaryButtonText: { color: '#FFFFFF', fontSize: 16, fontWeight: '700' },
-  secondaryButton: { alignItems: 'center', backgroundColor: '#FFFFFF', borderColor: colors.primary, borderRadius: 14, borderWidth: 1.5, justifyContent: 'center', minHeight: 52, paddingHorizontal: 18 }, secondaryButtonText: { color: colors.primary, fontSize: 16, fontWeight: '700' }, pressed: { opacity: 0.76 },
-  dividerRow: { alignItems: 'center', flexDirection: 'row', gap: 10 }, divider: { backgroundColor: colors.border, flex: 1, height: 1 }, dividerText: { color: colors.muted, fontSize: 11, fontWeight: '700' }, inlineRow: { flexDirection: 'row', justifyContent: 'center', marginTop: 22 }, muted: { color: colors.muted, fontSize: 14 }, link: { color: colors.primary, fontWeight: '700' }, error: { color: colors.error, fontSize: 13, lineHeight: 19, textAlign: 'center' },
-  backButton: { alignSelf: 'flex-start', marginBottom: 22, paddingVertical: 5 }, backButtonText: { color: colors.primary, fontSize: 16, fontWeight: '700' }, checkRow: { alignItems: 'flex-start', flexDirection: 'row', gap: 11 }, checkbox: { alignItems: 'center', borderColor: colors.border, borderRadius: 6, borderWidth: 1.5, height: 23, justifyContent: 'center', marginTop: 1, width: 23 }, checkboxSelected: { backgroundColor: colors.primary, borderColor: colors.primary }, checkmark: { color: '#FFFFFF', fontSize: 15, fontWeight: '800' }, terms: { color: colors.muted, flex: 1, fontSize: 13, lineHeight: 20 },
-  choiceRow: { flexDirection: 'row', gap: 10 }, choice: { alignItems: 'center', borderColor: colors.border, borderRadius: 14, borderWidth: 1, flex: 1, justifyContent: 'center', minHeight: 50 }, choiceSelected: { backgroundColor: colors.primary, borderColor: colors.primary }, choiceText: { color: colors.text, fontSize: 15, fontWeight: '600' }, choiceTextSelected: { color: '#FFFFFF' }, measureRow: { flexDirection: 'row', gap: 12 }, measureField: { flex: 1 }, privacyNote: { color: colors.muted, fontSize: 12, lineHeight: 18, textAlign: 'center' },
-  policyDisclosure: { color: colors.muted, fontSize: 12, lineHeight: 18, textAlign: 'center' },
+  flex: { flex: 1 }, safe: { backgroundColor: '#FBF8EF', flex: 1 }, scroll: { flexGrow: 1 }, content: { flex: 1, justifyContent: 'center', paddingHorizontal: 26, paddingVertical: 30 }, contentTop: { justifyContent: 'flex-start', paddingTop: 24 },
+  splash: { alignItems: 'center', backgroundColor: '#003C2E', flex: 1, justifyContent: 'center', overflow: 'hidden' }, splashContent: { alignItems: 'center', paddingHorizontal: 28, width: '100%' }, splashLogoPanel: { backgroundColor: '#FBF8EF', borderColor: '#BFA55D', borderRadius: 24, borderWidth: 1, marginBottom: 18, paddingHorizontal: 12, shadowColor: '#001B14', shadowOffset: { width: 0, height: 10 }, shadowOpacity: .2, shadowRadius: 16 }, splashLogo: { height: 170, width: 280 }, splashSubtitle: { color: '#F7EED2', fontSize: 14, fontWeight: '600', letterSpacing: .4, lineHeight: 21, textAlign: 'center' }, splashTap: { bottom: -110, color: '#D9C99C', fontSize: 12, position: 'absolute' },
+  corner: { bottom: -12, height: 185, left: -20, opacity: .6, position: 'absolute', width: 150 }, cornerStem: { backgroundColor: '#B59D54', bottom: 0, height: 170, left: 48, position: 'absolute', transform: [{ rotate: '35deg' }], width: 3 }, cornerLeaf: { backgroundColor: '#C1A95E', borderBottomLeftRadius: 20, borderTopRightRadius: 20, height: 44, position: 'absolute', width: 24 }, cornerLeaf1: { bottom: 36, left: 30, transform: [{ rotate: '-30deg' }] }, cornerLeaf2: { bottom: 76, left: 62, transform: [{ rotate: '48deg' }] }, cornerLeaf3: { bottom: 112, left: 73, transform: [{ rotate: '70deg' }] },
+  introTop: { alignItems: 'center', marginTop: 12 }, introKicker: { color: '#30443D', fontFamily: serif, fontSize: 17, fontWeight: '600' }, introTitle: { color: '#07533F', fontFamily: serif, fontSize: 34, fontWeight: '700', marginTop: 2 }, introCopy: { color: '#555F59', fontSize: 14, lineHeight: 21, marginTop: 13, maxWidth: 250, textAlign: 'center' }, introActions: { gap: 12 }, loginLink: { alignItems: 'center', paddingVertical: 8 },
+  herbArt: { alignSelf: 'center', height: 230, marginVertical: 22, width: 260 }, sunDisc: { backgroundColor: '#EFE4C4', borderRadius: 65, height: 130, left: 65, opacity: .7, position: 'absolute', top: 42, width: 130 }, bowl: { backgroundColor: '#D8C49A', borderBottomLeftRadius: 45, borderBottomRightRadius: 45, bottom: 20, height: 68, left: 73, position: 'absolute', shadowColor: '#3B4B43', shadowOffset: { width: 0, height: 8 }, shadowOpacity: .18, shadowRadius: 8, width: 116 }, bowlRim: { backgroundColor: '#BDA777', borderRadius: 20, height: 13, left: -5, position: 'absolute', top: -4, width: 126 }, stem: { backgroundColor: '#4F7447', bottom: 80, height: 120, left: 120, position: 'absolute', width: 4 }, stemRight: { height: 105, left: 140 }, leaf: { backgroundColor: '#6E914F', borderBottomLeftRadius: 22, borderTopRightRadius: 22, height: 44, position: 'absolute', width: 23 }, leaf1: { left: 91, top: 65, transform: [{ rotate: '-50deg' }] }, leaf2: { left: 132, top: 46, transform: [{ rotate: '25deg' }] }, leaf3: { left: 151, top: 82, transform: [{ rotate: '60deg' }] }, leaf4: { left: 105, top: 105, transform: [{ rotate: '-70deg' }] },
+  pageTitle: { color: '#202921', fontFamily: serif, fontSize: 30, fontWeight: '700', textAlign: 'center' }, pageSubtitle: { color: '#70756F', fontSize: 14, lineHeight: 21, marginBottom: 28, marginTop: 8, textAlign: 'center' }, step: { color: colors.gold, fontSize: 11, fontWeight: '800', letterSpacing: 1.6, marginBottom: 9, textAlign: 'center' }, form: { gap: 17 }, label: { color: '#333B35', fontSize: 12, fontWeight: '700', marginBottom: 7 }, input: { backgroundColor: '#FFFEFA', borderColor: '#DDDCCF', borderRadius: 11, borderWidth: 1, color: '#202921', fontSize: 15, minHeight: 51, paddingHorizontal: 14 },
+  primaryButton: { alignItems: 'center', backgroundColor: '#005A3F', borderRadius: 11, elevation: 2, justifyContent: 'center', minHeight: 51, paddingHorizontal: 18, shadowColor: '#003C2E', shadowOffset: { width: 0, height: 4 }, shadowOpacity: .14, shadowRadius: 8 }, primaryText: { color: '#FFF', fontSize: 15, fontWeight: '700' }, secondaryButton: { alignItems: 'center', backgroundColor: '#FFF', borderColor: '#0A6048', borderRadius: 11, borderWidth: 1.3, justifyContent: 'center', minHeight: 51, paddingHorizontal: 18 }, secondaryText: { color: '#07533F', fontSize: 15, fontWeight: '700' }, pressed: { opacity: .74 },
+  dividerRow: { alignItems: 'center', flexDirection: 'row', gap: 12, marginVertical: 27 }, divider: { backgroundColor: '#DDDCCF', flex: 1, height: 1 }, dividerText: { color: '#85877F', fontSize: 11 }, socialRow: { flexDirection: 'row', gap: 14, justifyContent: 'center' }, socialButton: { alignItems: 'center', backgroundColor: '#FFF', borderColor: '#E1E0D5', borderRadius: 13, borderWidth: 1, height: 74, justifyContent: 'center', width: 76 }, socialSymbol: { color: '#161A17', fontSize: 21, fontWeight: '800' }, google: { color: '#4285F4' }, socialLabel: { color: '#5F655F', fontSize: 10, marginTop: 5 },
+  notice: { color: '#7A6429', fontSize: 12, lineHeight: 18, marginTop: 20, textAlign: 'center' }, error: { color: colors.error, fontSize: 12, lineHeight: 18, marginTop: 14, textAlign: 'center' }, policy: { color: '#85877F', fontSize: 11, lineHeight: 17, marginTop: 28, textAlign: 'center' }, muted: { color: '#6D756F', fontSize: 13 }, link: { color: '#075A43', fontWeight: '700' }, back: { alignItems: 'center', height: 38, justifyContent: 'center', marginBottom: 8, marginLeft: -10, width: 38 }, backText: { color: '#26352F', fontSize: 31, fontWeight: '300', lineHeight: 32 },
+  checkRow: { alignItems: 'flex-start', flexDirection: 'row', gap: 11, marginTop: 3 }, checkbox: { alignItems: 'center', borderColor: '#B9BDB5', borderRadius: 5, borderWidth: 1.3, height: 22, justifyContent: 'center', marginTop: 1, width: 22 }, checkboxSelected: { backgroundColor: '#005A3F', borderColor: '#005A3F' }, checkmark: { color: '#FFF', fontSize: 14, fontWeight: '800' }, terms: { color: '#6D756F', flex: 1, fontSize: 12, lineHeight: 19 },
+  choiceRow: { flexDirection: 'row', gap: 8 }, choice: { alignItems: 'center', backgroundColor: '#FFFEFA', borderColor: '#DDDCCF', borderRadius: 10, borderWidth: 1, flex: 1, justifyContent: 'center', minHeight: 47 }, choiceSelected: { backgroundColor: '#075A43', borderColor: '#075A43' }, choiceText: { color: '#4A514C', fontSize: 14, fontWeight: '600' }, choiceTextSelected: { color: '#FFF' }, measureRow: { flexDirection: 'row', gap: 12 }, measureField: { flex: 1 }, privacy: { color: '#85877F', fontSize: 11, lineHeight: 17, textAlign: 'center' }, homeLogo: { alignSelf: 'center', height: 100, marginBottom: 18, width: 170 },
 });
