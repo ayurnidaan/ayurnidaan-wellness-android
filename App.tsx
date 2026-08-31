@@ -13,77 +13,82 @@ import { colors } from './src/theme';
 
 WebBrowser.maybeCompleteAuthSession();
 
-type Screen = 'splash' | 'welcome' | 'signup' | 'verify' | 'profile' | 'home';
-type OtpPurpose = 'login' | 'signup';
+type Screen = 'splash' | 'welcome' | 'account' | 'profile' | 'home';
 const logo = require('./assets/ayurnidaan-logo.png');
 
 export default function App() {
   const [screen, setScreen] = useState<Screen>('splash');
   const [session, setSession] = useState<Session | null>(null);
-  const [email, setEmail] = useState('');
-  const [otpPurpose, setOtpPurpose] = useState<OtpPurpose>('login');
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
     const { data } = supabase.auth.onAuthStateChange((_event, nextSession) => {
       setSession(nextSession);
-      if (nextSession) setScreen('profile');
+      if (!nextSession && screen !== 'splash') setScreen('welcome');
     });
     return () => data.subscription.unsubscribe();
   }, []);
 
-  if (screen === 'splash') return <BrandSplash onFinish={() => setScreen(session ? 'profile' : 'welcome')} />;
+  async function continueFromSplash() {
+    if (!session) return setScreen('welcome');
+    await routeAuthenticatedUser(session);
+  }
+
+  async function routeAuthenticatedUser(currentSession: Session) {
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('profile_completed_at')
+      .eq('user_id', currentSession.user.id)
+      .maybeSingle();
+    setScreen(profile?.profile_completed_at ? 'home' : 'account');
+  }
+
+  async function handleAuthenticated(nextSession: Session) {
+    setSession(nextSession);
+    await routeAuthenticatedUser(nextSession);
+  }
+
+  if (screen === 'splash') return <BrandSplash onFinish={continueFromSplash} />;
   if (screen === 'welcome') {
-    return <WelcomeScreen onOtpSent={(value) => { setEmail(value); setOtpPurpose('login'); setScreen('verify'); }} onSignUp={() => setScreen('signup')} />;
+    return <WelcomeScreen onAuthenticated={handleAuthenticated} />;
   }
-  if (screen === 'signup') {
-    return <SignUpScreen onBack={() => setScreen('welcome')} onOtpSent={(value) => { setEmail(value); setOtpPurpose('signup'); setScreen('verify'); }} />;
-  }
-  if (screen === 'verify') {
-    return <VerifyOtpScreen email={email} purpose={otpPurpose} onBack={() => setScreen(otpPurpose === 'signup' ? 'signup' : 'welcome')} onVerified={() => setScreen('profile')} />;
-  }
+  if (screen === 'account') return <AccountSetupScreen session={session} onComplete={() => setScreen('profile')} />;
   if (screen === 'profile') return <ProfileScreen session={session} onComplete={() => setScreen('home')} />;
   return <HomeScreen onSignOut={() => setScreen('welcome')} />;
 }
 
 function BrandSplash({ onFinish }: { onFinish: () => void }) {
   const opacity = useRef(new Animated.Value(0)).current;
+  const [ready, setReady] = useState(false);
+  const [leaving, setLeaving] = useState(false);
   useEffect(() => {
-    Animated.sequence([
-      Animated.timing(opacity, { toValue: 1, duration: 650, useNativeDriver: true }),
-      Animated.delay(1200),
-      Animated.timing(opacity, { toValue: 0, duration: 450, useNativeDriver: true }),
-    ]).start(onFinish);
-  }, [onFinish, opacity]);
+    Animated.timing(opacity, { toValue: 1, duration: 650, useNativeDriver: true }).start();
+    const timer = setTimeout(() => setReady(true), 1200);
+    return () => clearTimeout(timer);
+  }, [opacity]);
+
+  function continueOnTap() {
+    if (!ready || leaving) return;
+    setLeaving(true);
+    Animated.timing(opacity, { toValue: 0, duration: 350, useNativeDriver: true }).start(onFinish);
+  }
+
   return (
-    <SafeAreaView style={styles.brandSplash}>
+    <Pressable accessibilityRole="button" accessibilityLabel="Continue" disabled={!ready || leaving} onPress={continueOnTap} style={styles.brandSplash}>
       <StatusBar style="dark" />
       <Animated.View style={[styles.brandBlock, { opacity }]}>
         <Image source={logo} style={styles.logoLarge} resizeMode="contain" />
         <Text style={styles.brandName}>Ayurnidaan</Text>
         <Text style={styles.brandSubtitle}>AI-powered Ayurveda for Personalized Health</Text>
+        {ready ? <Text style={styles.tapHint}>Tap anywhere to continue</Text> : null}
       </Animated.View>
-    </SafeAreaView>
+    </Pressable>
   );
 }
 
-function WelcomeScreen({ onOtpSent, onSignUp }: { onOtpSent: (email: string) => void; onSignUp: () => void }) {
-  const [email, setEmail] = useState('');
+function WelcomeScreen({ onAuthenticated }: { onAuthenticated: (session: Session) => Promise<void> }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-
-  async function sendOtp() {
-    if (!isValidEmail(email)) return setError('Enter a valid email address.');
-    setLoading(true); setError('');
-    const normalizedEmail = email.trim().toLowerCase();
-    const { error: authError } = await supabase.auth.signInWithOtp({
-      email: normalizedEmail,
-      options: { shouldCreateUser: false },
-    });
-    setLoading(false);
-    if (authError) return setError(authError.message);
-    onOtpSent(normalizedEmail);
-  }
 
   async function signInWithGoogle() {
     setLoading(true); setError('');
@@ -98,11 +103,7 @@ function WelcomeScreen({ onOtpSent, onSignUp }: { onOtpSent: (email: string) => 
       if (params.access_token && params.refresh_token) {
         const { data: sessionData, error: sessionError } = await supabase.auth.setSession({ access_token: params.access_token, refresh_token: params.refresh_token });
         if (sessionError) setError(sessionError.message);
-        if (sessionData.session?.user.id) {
-          const acceptedAt = new Date().toISOString();
-          await supabase.auth.updateUser({ data: { terms_accepted_at: acceptedAt } });
-          await supabase.from('profiles').update({ terms_accepted_at: acceptedAt }).eq('user_id', sessionData.session.user.id);
-        }
+        if (sessionData.session) await onAuthenticated(sessionData.session);
       }
     }
     setLoading(false);
@@ -114,72 +115,47 @@ function WelcomeScreen({ onOtpSent, onSignUp }: { onOtpSent: (email: string) => 
       <Text style={styles.heading}>Welcome to Ayurnidaan</Text>
       <Text style={styles.copy}>Personalized health guidance combining Ayurveda, modern health information and AI.</Text>
       <View style={styles.card}>
-        <Field label="Email address" value={email} onChangeText={setEmail} placeholder="you@example.com" keyboardType="email-address" autoCapitalize="none" autoComplete="email" />
-        <PrimaryButton label="Email me a code" loading={loading} onPress={sendOtp} />
-        <View style={styles.dividerRow}><View style={styles.divider} /><Text style={styles.dividerText}>OR</Text><View style={styles.divider} /></View>
-        <SecondaryButton label="Continue with Google" onPress={signInWithGoogle} />
-        <Text style={styles.policyDisclosure}>By continuing with Google, you accept the <Text style={styles.link}>Terms of Use</Text> and <Text style={styles.link}>Privacy Policy</Text>.</Text>
+        <PrimaryButton label="Continue with Google" loading={loading} onPress={signInWithGoogle} />
         {error ? <Text style={styles.error}>{error}</Text> : null}
       </View>
-      <View style={styles.inlineRow}><Text style={styles.muted}>New to Ayurnidaan?</Text><Pressable onPress={onSignUp}><Text style={styles.link}> Create account</Text></Pressable></View>
     </ScreenFrame>
   );
 }
 
-function SignUpScreen({ onBack, onOtpSent }: { onBack: () => void; onOtpSent: (email: string) => void }) {
-  const [name, setName] = useState(''); const [email, setEmail] = useState('');
+function AccountSetupScreen({ session, onComplete }: { session: Session | null; onComplete: () => void }) {
+  const [name, setName] = useState('');
   const [accepted, setAccepted] = useState(false); const [loading, setLoading] = useState(false); const [error, setError] = useState('');
-  async function signUp() {
-    if (!name.trim() || !isValidEmail(email) || !accepted) return setError('Enter your name and a valid email address, then accept the policies.');
+
+  async function saveAccountDetails() {
+    if (!session?.user.id) return setError('Please sign in again.');
+    if (!name.trim() || !accepted) return setError('Enter your name and accept the policies.');
     setLoading(true); setError('');
-    const normalizedEmail = email.trim().toLowerCase();
-    const { error: authError } = await supabase.auth.signInWithOtp({
-      email: normalizedEmail,
-      options: {
-        shouldCreateUser: true,
-        data: { full_name: name.trim(), terms_accepted_at: new Date().toISOString() },
-      },
+    const acceptedAt = new Date().toISOString();
+    const { error: authError } = await supabase.auth.updateUser({
+      data: { full_name: name.trim(), terms_accepted_at: acceptedAt },
+    });
+    const { error: profileError } = await supabase.from('profiles').upsert({
+      user_id: session.user.id,
+      full_name: name.trim(),
+      terms_accepted_at: acceptedAt,
     });
     setLoading(false);
     if (authError) return setError(authError.message);
-    onOtpSent(normalizedEmail);
+    if (profileError) return setError(profileError.message);
+    onComplete();
   }
   return (
-    <ScreenFrame scroll>
-      <BackButton onPress={onBack} />
-      <Text style={styles.heading}>Create your account</Text>
-      <Text style={styles.copy}>Start with the essentials. Your health profile comes next.</Text>
+    <ScreenFrame>
+      <Text style={styles.eyebrow}>LET'S GET STARTED</Text>
+      <Text style={styles.heading}>What should we call you?</Text>
+      <Text style={styles.copy}>Tell us your name before creating your personalized health profile.</Text>
       <View style={styles.card}>
         <Field label="Full name" value={name} onChangeText={setName} placeholder="Your name" />
-        <Field label="Email address" value={email} onChangeText={setEmail} placeholder="you@example.com" keyboardType="email-address" autoCapitalize="none" autoComplete="email" />
         <Pressable style={styles.checkRow} onPress={() => setAccepted((value) => !value)}>
           <View style={[styles.checkbox, accepted && styles.checkboxSelected]}>{accepted ? <Text style={styles.checkmark}>✓</Text> : null}</View>
           <Text style={styles.terms}>I accept the <Text style={styles.link}>Terms of Use</Text> and <Text style={styles.link}>Privacy Policy</Text>.</Text>
         </Pressable>
-        <PrimaryButton label="Create account with email OTP" loading={loading} onPress={signUp} />
-        {error ? <Text style={styles.error}>{error}</Text> : null}
-      </View>
-    </ScreenFrame>
-  );
-}
-
-function VerifyOtpScreen({ email, purpose, onBack, onVerified }: { email: string; purpose: OtpPurpose; onBack: () => void; onVerified: () => void }) {
-  const [token, setToken] = useState(''); const [loading, setLoading] = useState(false); const [error, setError] = useState('');
-  async function verify() {
-    if (token.length !== 6) return setError('Enter the six-digit code.');
-    setLoading(true); setError('');
-    const { error: authError } = await supabase.auth.verifyOtp({ email, token, type: 'email' });
-    setLoading(false);
-    if (authError) return setError(authError.message);
-    onVerified();
-  }
-  return (
-    <ScreenFrame>
-      <BackButton onPress={onBack} /><Text style={styles.heading}>Verify your number</Text>
-      <Text style={styles.copy}>Enter the code sent to {email}. This will {purpose === 'signup' ? 'confirm your new account' : 'sign you in'}.</Text>
-      <View style={styles.card}>
-        <TextInput accessibilityLabel="One-time password" keyboardType="number-pad" maxLength={6} onChangeText={setToken} placeholder="000000" placeholderTextColor="#93A29D" style={[styles.input, styles.otpInput]} value={token} />
-        <PrimaryButton label="Verify and continue" loading={loading} onPress={verify} />
+        <PrimaryButton label="Continue" loading={loading} onPress={saveAccountDetails} />
         {error ? <Text style={styles.error}>{error}</Text> : null}
       </View>
     </ScreenFrame>
@@ -230,8 +206,6 @@ function ScreenFrame({ children, scroll = false }: { children: React.ReactNode; 
 function Field({ label, ...props }: React.ComponentProps<typeof TextInput> & { label: string }) { return <View><Text style={styles.label}>{label}</Text><TextInput placeholderTextColor="#93A29D" style={styles.input} {...props} /></View>; }
 function PrimaryButton({ label, loading, onPress }: { label: string; loading?: boolean; onPress: () => void }) { return <Pressable disabled={loading} onPress={onPress} style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}>{loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>{label}</Text>}</Pressable>; }
 function SecondaryButton({ label, onPress }: { label: string; onPress: () => void }) { return <Pressable onPress={onPress} style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}><Text style={styles.secondaryButtonText}>{label}</Text></Pressable>; }
-function BackButton({ onPress }: { onPress: () => void }) { return <Pressable onPress={onPress} style={styles.backButton}><Text style={styles.backButtonText}>‹ Back</Text></Pressable>; }
-function isValidEmail(value: string) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim()); }
 function extractAuthParams(url: string) { const fragment = url.split('#')[1] ?? url.split('?')[1] ?? ''; return Object.fromEntries(new URLSearchParams(fragment)); }
 
 const styles = StyleSheet.create({
@@ -240,6 +214,7 @@ const styles = StyleSheet.create({
   brandSplash: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background }, brandBlock: { alignItems: 'center', paddingHorizontal: 28 },
   logoLarge: { width: 230, height: 150 }, logoSmall: { width: 150, height: 96, alignSelf: 'center', marginBottom: 12 },
   brandName: { color: colors.primary, fontSize: 36, fontWeight: '700', letterSpacing: 0.5, marginTop: 8 }, brandSubtitle: { color: colors.text, fontSize: 15, lineHeight: 22, textAlign: 'center', marginTop: 8 },
+  tapHint: { color: colors.muted, fontSize: 13, marginTop: 34 },
   eyebrow: { color: colors.gold, fontSize: 12, fontWeight: '700', letterSpacing: 1.5, textAlign: 'center', marginBottom: 8 }, heading: { color: colors.text, fontSize: 29, fontWeight: '700', lineHeight: 36, textAlign: 'center' },
   copy: { color: colors.muted, fontSize: 15, lineHeight: 23, textAlign: 'center', marginTop: 10, marginBottom: 24 },
   card: { backgroundColor: colors.surface, borderColor: '#EEE8DA', borderRadius: 24, borderWidth: 1, gap: 14, padding: 20, shadowColor: '#17352E', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.08, shadowRadius: 22, elevation: 3 },
