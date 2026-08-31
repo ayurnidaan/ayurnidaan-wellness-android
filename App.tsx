@@ -8,7 +8,7 @@ import { supabase } from './src/lib/supabase';
 import { colors } from './src/theme';
 
 WebBrowser.maybeCompleteAuthSession();
-type Screen = 'splash' | 'intro' | 'auth' | 'account' | 'profile' | 'home';
+type Screen = 'splash' | 'intro' | 'auth' | 'account' | 'profile' | 'confirmation' | 'home';
 const logo = require('./assets/ayurnidaan-logo.png');
 
 export default function App() {
@@ -29,7 +29,8 @@ export default function App() {
   if (screen === 'intro') return <IntroScreen onContinue={() => setScreen('auth')} />;
   if (screen === 'auth') return <AuthScreen onBack={() => setScreen('intro')} onAuthenticated={authenticated} />;
   if (screen === 'account') return <AccountScreen session={session} onComplete={() => setScreen('profile')} />;
-  if (screen === 'profile') return <ProfileScreen session={session} onComplete={() => setScreen('home')} />;
+  if (screen === 'profile') return <ProfileScreen session={session} onComplete={() => setScreen('confirmation')} />;
+  if (screen === 'confirmation') return <ConfirmationScreen session={session} onContinue={() => setScreen('home')} />;
   return <HomeScreen onSignOut={() => setScreen('intro')} />;
 }
 
@@ -155,6 +156,19 @@ function ProfileScreen({ session, onComplete }: { session: Session | null; onCom
   </ScreenFrame>;
 }
 
+function ConfirmationScreen({ session, onContinue }: { session: Session | null; onContinue: () => void }) {
+  const fullName = session?.user.user_metadata.full_name?.trim();
+  const firstName = fullName?.split(/\s+/)[0] || 'there';
+  return <ScreenFrame>
+    <View style={styles.confirmationContent}>
+      <View style={styles.successCircle}><Text style={styles.successCheck}>✓</Text></View>
+      <Text style={styles.confirmationTitle}>Welcome {firstName}! 👋</Text>
+      <Text style={styles.confirmationCopy}>Explore Ayurnidaan and unlock personalized guidance for your health & lifestyle.</Text>
+    </View>
+    <View style={styles.confirmationAction}><PrimaryButton label="Go to Home" onPress={onContinue} /></View>
+  </ScreenFrame>;
+}
+
 function HomeScreen({ onSignOut }: { onSignOut: () => void }) {
   async function signOut() { await supabase.auth.signOut(); onSignOut(); }
   return <ScreenFrame><Image source={logo} style={styles.homeLogo} resizeMode="contain" /><Text style={styles.pageTitle}>Your wellness journey starts here</Text><Text style={styles.pageSubtitle}>Your Ayurnidaan home experience is ready to be built.</Text><SecondaryButton label="Sign out" onPress={signOut} /></ScreenFrame>;
@@ -186,4 +200,5 @@ const styles = StyleSheet.create({
   notice: { color: '#7A6429', fontSize: 12, lineHeight: 18, marginTop: 20, textAlign: 'center' }, error: { color: colors.error, fontSize: 12, lineHeight: 18, marginTop: 14, textAlign: 'center' }, policy: { color: '#85877F', fontSize: 11, lineHeight: 17, marginTop: 28, textAlign: 'center' }, muted: { color: '#6D756F', fontSize: 13 }, link: { color: '#075A43', fontWeight: '700' }, back: { alignItems: 'center', height: 38, justifyContent: 'center', marginBottom: 8, marginLeft: -10, width: 38 }, backText: { color: '#26352F', fontSize: 31, fontWeight: '300', lineHeight: 32 },
   checkRow: { alignItems: 'flex-start', flexDirection: 'row', gap: 11, marginTop: 3 }, checkbox: { alignItems: 'center', borderColor: '#B9BDB5', borderRadius: 5, borderWidth: 1.3, height: 22, justifyContent: 'center', marginTop: 1, width: 22 }, checkboxSelected: { backgroundColor: '#005A3F', borderColor: '#005A3F' }, checkmark: { color: '#FFF', fontSize: 14, fontWeight: '800' }, terms: { color: '#6D756F', flex: 1, fontSize: 12, lineHeight: 19 },
   choiceRow: { flexDirection: 'row', gap: 8 }, choice: { alignItems: 'center', backgroundColor: '#FFFEFA', borderColor: '#DDDCCF', borderRadius: 10, borderWidth: 1, flex: 1, justifyContent: 'center', minHeight: 47 }, choiceSelected: { backgroundColor: '#075A43', borderColor: '#075A43' }, choiceText: { color: '#4A514C', fontSize: 14, fontWeight: '600' }, choiceTextSelected: { color: '#FFF' }, measureRow: { flexDirection: 'row', gap: 12 }, measureField: { flex: 1 }, privacy: { color: '#85877F', fontSize: 11, lineHeight: 17, textAlign: 'center' }, homeLogo: { alignSelf: 'center', height: 100, marginBottom: 18, width: 170 },
+  confirmationContent: { alignItems: 'center', flex: 1, justifyContent: 'center', paddingBottom: 80 }, successCircle: { alignItems: 'center', backgroundColor: '#075A3F', borderRadius: 38, elevation: 3, height: 76, justifyContent: 'center', marginBottom: 28, shadowColor: '#003C2E', shadowOffset: { width: 0, height: 6 }, shadowOpacity: .2, shadowRadius: 12, width: 76 }, successCheck: { color: '#FFF', fontSize: 40, fontWeight: '700', lineHeight: 46 }, confirmationTitle: { color: '#202921', fontFamily: serif, fontSize: 24, fontWeight: '700', textAlign: 'center' }, confirmationCopy: { color: '#5F6861', fontSize: 14, lineHeight: 21, marginTop: 13, maxWidth: 280, textAlign: 'center' }, confirmationAction: { bottom: 30, left: 26, position: 'absolute', right: 26 },
 });
