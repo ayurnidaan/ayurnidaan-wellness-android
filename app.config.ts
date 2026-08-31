@@ -13,6 +13,11 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   icon: './assets/ayurnidaan-logo.png',
   userInterfaceStyle: 'light',
   scheme: isDevelopment ? 'ayurnidaan-dev' : 'ayurnidaan',
+  extra: {
+    eas: {
+      projectId: '5fd63f99-6df9-4147-bb0d-5cb8d7cde91f',
+    },
+  },
   plugins: [
     'expo-web-browser',
     [
