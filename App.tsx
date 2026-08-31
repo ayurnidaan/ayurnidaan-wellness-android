@@ -31,7 +31,7 @@ export default function App() {
   if (screen === 'account') return <AccountScreen session={session} onComplete={() => setScreen('profile')} />;
   if (screen === 'profile') return <ProfileScreen session={session} onComplete={() => setScreen('confirmation')} />;
   if (screen === 'confirmation') return <ConfirmationScreen session={session} onContinue={() => setScreen('home')} />;
-  return <HomeScreen onSignOut={() => setScreen('intro')} />;
+  return <HomeScreen session={session} />;
 }
 
 function BrandSplash({ onFinish }: { onFinish: () => void }) {
@@ -169,9 +169,37 @@ function ConfirmationScreen({ session, onContinue }: { session: Session | null; 
   </ScreenFrame>;
 }
 
-function HomeScreen({ onSignOut }: { onSignOut: () => void }) {
-  async function signOut() { await supabase.auth.signOut(); onSignOut(); }
-  return <ScreenFrame><Image source={logo} style={styles.homeLogo} resizeMode="contain" /><Text style={styles.pageTitle}>Your wellness journey starts here</Text><Text style={styles.pageSubtitle}>Your Ayurnidaan home experience is ready to be built.</Text><SecondaryButton label="Sign out" onPress={signOut} /></ScreenFrame>;
+function HomeScreen({ session }: { session: Session | null }) {
+  const fullName = session?.user.user_metadata.full_name?.trim();
+  const firstName = fullName?.split(/\s+/)[0] || 'there';
+  const features = [
+    { icon: '🥗', label: 'Food' }, { icon: '🧘', label: 'Yoga' },
+    { icon: '◉', label: 'Pranayama' }, { icon: '◎', label: 'Panchakarma' },
+    { icon: '♙', label: 'AI Assistant' }, { icon: '▣', label: 'Doctor' },
+  ];
+  return <SafeAreaView style={styles.homeSafe}>
+    <StatusBar style="light" />
+    <ScrollView contentContainerStyle={styles.homeScroll} showsVerticalScrollIndicator={false}>
+      <View style={styles.homeHeader}>
+        <View><Text style={styles.greeting}>Good Morning,</Text><Text style={styles.greetingName}>{firstName} 👋</Text></View>
+        <View style={styles.bell}><Text style={styles.bellIcon}>♧</Text><View style={styles.notificationDot} /></View>
+      </View>
+      <View style={styles.dashboardBody}>
+        <View style={styles.assessmentCard}>
+          <Text style={styles.assessmentTitle}>Complete Your Assessments{`\n`}for Personalized Guidance</Text>
+          <AssessmentItem number="1" title="Prakriti Assessment" copy="Understand your natural constitution" />
+          <AssessmentItem number="2" title="Current Health Assessment" copy="Tell us how you feel right now" />
+          <Pressable onPress={() => {}} style={({ pressed }) => [styles.startButton, pressed && styles.pressed]}><Text style={styles.startButtonText}>Start Now</Text></Pressable>
+        </View>
+        <Text style={styles.exploreTitle}>Explore Ayurnidaan</Text>
+        <View style={styles.featureGrid}>{features.map((feature) => <FeatureTile key={feature.label} {...feature} />)}</View>
+      </View>
+    </ScrollView>
+    <View style={styles.bottomNav}>
+      <NavItem icon="⌂" label="Home" active /><NavItem icon="♡" label="My Health" />
+      <NavItem icon="▦" label="Feed" /><NavItem icon="♧" label="AI" /><NavItem icon="♙" label="Profile" />
+    </View>
+  </SafeAreaView>;
 }
 
 function ScreenFrame({ children, scroll = false, alignTop = false }: { children: React.ReactNode; scroll?: boolean; alignTop?: boolean }) {
@@ -185,6 +213,9 @@ function SecondaryButton({ label, onPress }: { label: string; onPress: () => voi
 function SocialButton({ symbol, label, loading, onPress }: { symbol: string; label: string; loading?: boolean; onPress: () => void }) { return <Pressable accessibilityLabel={`Continue with ${label}`} disabled={loading} onPress={onPress} style={({ pressed }) => [styles.socialButton, pressed && styles.pressed]}>{loading ? <ActivityIndicator color={colors.primaryDark} /> : <Text style={[styles.socialSymbol, label === 'Google' && styles.google]}>{symbol}</Text>}<Text style={styles.socialLabel}>{label}</Text></Pressable>; }
 function Divider({ label }: { label: string }) { return <View style={styles.dividerRow}><View style={styles.divider} /><Text style={styles.dividerText}>{label}</Text><View style={styles.divider} /></View>; }
 function BackButton({ onPress }: { onPress: () => void }) { return <Pressable accessibilityLabel="Go back" onPress={onPress} style={styles.back}><Text style={styles.backText}>‹</Text></Pressable>; }
+function AssessmentItem({ number, title, copy }: { number: string; title: string; copy: string }) { return <View style={styles.assessmentItem}><View style={styles.numberBadge}><Text style={styles.numberText}>{number}</Text></View><View style={styles.assessmentText}><Text style={styles.assessmentItemTitle}>{title}</Text><Text style={styles.assessmentCopy}>{copy}</Text></View></View>; }
+function FeatureTile({ icon, label }: { icon: string; label: string }) { return <Pressable accessibilityLabel={label} onPress={() => {}} style={({ pressed }) => [styles.featureTile, pressed && styles.pressed]}><Text style={styles.featureIcon}>{icon}</Text><Text style={styles.featureLabel}>{label}</Text></Pressable>; }
+function NavItem({ icon, label, active = false }: { icon: string; label: string; active?: boolean }) { return <Pressable accessibilityLabel={label} onPress={() => {}} style={styles.navItem}><Text style={[styles.navIcon, active && styles.navActive]}>{icon}</Text><Text style={[styles.navLabel, active && styles.navActive]}>{label}</Text>{active ? <View style={styles.navIndicator} /> : null}</Pressable>; }
 function extractAuthParams(url: string) { const fragment = url.split('#')[1] ?? url.split('?')[1] ?? ''; return Object.fromEntries(new URLSearchParams(fragment)); }
 
 const serif = Platform.select({ ios: 'Georgia', android: 'serif' });
@@ -199,6 +230,7 @@ const styles = StyleSheet.create({
   dividerRow: { alignItems: 'center', flexDirection: 'row', gap: 12, marginVertical: 27 }, divider: { backgroundColor: '#DDDCCF', flex: 1, height: 1 }, dividerText: { color: '#85877F', fontSize: 11 }, socialRow: { flexDirection: 'row', gap: 14, justifyContent: 'center' }, socialButton: { alignItems: 'center', backgroundColor: '#FFF', borderColor: '#E1E0D5', borderRadius: 13, borderWidth: 1, height: 74, justifyContent: 'center', width: 76 }, socialSymbol: { color: '#161A17', fontSize: 21, fontWeight: '800' }, google: { color: '#4285F4' }, socialLabel: { color: '#5F655F', fontSize: 10, marginTop: 5 },
   notice: { color: '#7A6429', fontSize: 12, lineHeight: 18, marginTop: 20, textAlign: 'center' }, error: { color: colors.error, fontSize: 12, lineHeight: 18, marginTop: 14, textAlign: 'center' }, policy: { color: '#85877F', fontSize: 11, lineHeight: 17, marginTop: 28, textAlign: 'center' }, muted: { color: '#6D756F', fontSize: 13 }, link: { color: '#075A43', fontWeight: '700' }, back: { alignItems: 'center', height: 38, justifyContent: 'center', marginBottom: 8, marginLeft: -10, width: 38 }, backText: { color: '#26352F', fontSize: 31, fontWeight: '300', lineHeight: 32 },
   checkRow: { alignItems: 'flex-start', flexDirection: 'row', gap: 11, marginTop: 3 }, checkbox: { alignItems: 'center', borderColor: '#B9BDB5', borderRadius: 5, borderWidth: 1.3, height: 22, justifyContent: 'center', marginTop: 1, width: 22 }, checkboxSelected: { backgroundColor: '#005A3F', borderColor: '#005A3F' }, checkmark: { color: '#FFF', fontSize: 14, fontWeight: '800' }, terms: { color: '#6D756F', flex: 1, fontSize: 12, lineHeight: 19 },
-  choiceRow: { flexDirection: 'row', gap: 8 }, choice: { alignItems: 'center', backgroundColor: '#FFFEFA', borderColor: '#DDDCCF', borderRadius: 10, borderWidth: 1, flex: 1, justifyContent: 'center', minHeight: 47 }, choiceSelected: { backgroundColor: '#075A43', borderColor: '#075A43' }, choiceText: { color: '#4A514C', fontSize: 14, fontWeight: '600' }, choiceTextSelected: { color: '#FFF' }, measureRow: { flexDirection: 'row', gap: 12 }, measureField: { flex: 1 }, privacy: { color: '#85877F', fontSize: 11, lineHeight: 17, textAlign: 'center' }, homeLogo: { alignSelf: 'center', height: 100, marginBottom: 18, width: 170 },
+  choiceRow: { flexDirection: 'row', gap: 8 }, choice: { alignItems: 'center', backgroundColor: '#FFFEFA', borderColor: '#DDDCCF', borderRadius: 10, borderWidth: 1, flex: 1, justifyContent: 'center', minHeight: 47 }, choiceSelected: { backgroundColor: '#075A43', borderColor: '#075A43' }, choiceText: { color: '#4A514C', fontSize: 14, fontWeight: '600' }, choiceTextSelected: { color: '#FFF' }, measureRow: { flexDirection: 'row', gap: 12 }, measureField: { flex: 1 }, privacy: { color: '#85877F', fontSize: 11, lineHeight: 17, textAlign: 'center' },
   confirmationContent: { alignItems: 'center', flex: 1, justifyContent: 'center', paddingBottom: 80 }, successCircle: { alignItems: 'center', backgroundColor: '#075A3F', borderRadius: 38, elevation: 3, height: 76, justifyContent: 'center', marginBottom: 28, shadowColor: '#003C2E', shadowOffset: { width: 0, height: 6 }, shadowOpacity: .2, shadowRadius: 12, width: 76 }, successCheck: { color: '#FFF', fontSize: 40, fontWeight: '700', lineHeight: 46 }, confirmationTitle: { color: '#202921', fontFamily: serif, fontSize: 24, fontWeight: '700', textAlign: 'center' }, confirmationCopy: { color: '#5F6861', fontSize: 14, lineHeight: 21, marginTop: 13, maxWidth: 280, textAlign: 'center' }, confirmationAction: { bottom: 30, left: 26, position: 'absolute', right: 26 },
+  homeSafe: { backgroundColor: '#004735', flex: 1 }, homeScroll: { backgroundColor: '#FBF8EF', flexGrow: 1, paddingBottom: 100 }, homeHeader: { alignItems: 'center', backgroundColor: '#004735', flexDirection: 'row', justifyContent: 'space-between', minHeight: 155, paddingBottom: 46, paddingHorizontal: 25, paddingTop: 22 }, greeting: { color: '#D9E7DF', fontSize: 14, fontWeight: '500' }, greetingName: { color: '#FFF', fontFamily: serif, fontSize: 26, fontWeight: '700', marginTop: 3 }, bell: { alignItems: 'center', borderColor: '#C7DED3', borderRadius: 18, borderWidth: 1.2, height: 36, justifyContent: 'center', width: 36 }, bellIcon: { color: '#FFF', fontSize: 22, transform: [{ rotate: '180deg' }] }, notificationDot: { backgroundColor: '#E5B54D', borderRadius: 4, height: 7, position: 'absolute', right: 4, top: 3, width: 7 }, dashboardBody: { paddingHorizontal: 20 }, assessmentCard: { backgroundColor: '#FFFDF7', borderColor: '#E7E0CE', borderRadius: 19, borderWidth: 1, elevation: 4, gap: 19, marginTop: -34, padding: 20, shadowColor: '#17352E', shadowOffset: { width: 0, height: 7 }, shadowOpacity: .1, shadowRadius: 14 }, assessmentTitle: { color: '#28332D', fontFamily: serif, fontSize: 18, fontWeight: '700', lineHeight: 25 }, assessmentItem: { alignItems: 'flex-start', flexDirection: 'row', gap: 13 }, numberBadge: { alignItems: 'center', backgroundColor: '#075A3F', borderRadius: 14, height: 28, justifyContent: 'center', marginTop: 2, width: 28 }, numberText: { color: '#FFF', fontSize: 13, fontWeight: '800' }, assessmentText: { flex: 1 }, assessmentItemTitle: { color: '#303A34', fontSize: 14, fontWeight: '700' }, assessmentCopy: { color: '#737B75', fontSize: 12, lineHeight: 18, marginTop: 3 }, startButton: { alignItems: 'center', backgroundColor: '#075A3F', borderRadius: 10, justifyContent: 'center', minHeight: 46 }, startButtonText: { color: '#FFF', fontSize: 14, fontWeight: '700' }, exploreTitle: { color: '#28332D', fontFamily: serif, fontSize: 19, fontWeight: '700', marginBottom: 15, marginTop: 26 }, featureGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 }, featureTile: { alignItems: 'center', backgroundColor: '#FFF6E6', borderColor: '#F3E7D1', borderRadius: 15, borderWidth: 1, height: 94, justifyContent: 'center', width: '30.5%' }, featureIcon: { fontSize: 27 }, featureLabel: { color: '#3D4640', fontSize: 11, fontWeight: '700', marginTop: 9, textAlign: 'center' }, bottomNav: { alignItems: 'center', backgroundColor: '#FFF', borderColor: '#E8E3D8', borderTopWidth: 1, bottom: 0, flexDirection: 'row', height: 79, justifyContent: 'space-around', left: 0, paddingBottom: 7, position: 'absolute', right: 0 }, navItem: { alignItems: 'center', flex: 1, justifyContent: 'center' }, navIcon: { color: '#818A84', fontSize: 24, fontWeight: '700' }, navLabel: { color: '#818A84', fontSize: 10, marginTop: 4 }, navActive: { color: '#075A3F', fontWeight: '800' }, navIndicator: { backgroundColor: '#075A3F', borderRadius: 2, height: 3, marginTop: 5, width: 18 },
 });
