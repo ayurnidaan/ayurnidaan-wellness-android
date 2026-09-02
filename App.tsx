@@ -381,18 +381,17 @@ const currentHealthConclusions = [
   'Your Vata and Pitta doshas are imbalanced', 'Your Vata and Kapha doshas are imbalanced', 'Your Pitta and Kapha doshas are imbalanced',
   'Your Vata, Pitta and Kapha doshas are imbalanced',
 ];
+const currentHealthOpening = 'Please describe the main symptom, complaint, or health concern you are experiencing right now.';
 
 function CurrentHealthChat({ session, onBack, onComplete }: { session: Session | null; onBack: () => void; onComplete: () => void }) {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>([{ role: 'assistant', content: currentHealthOpening }]);
   const [input, setInput] = useState('');
-  const [sending, setSending] = useState(true);
+  const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
-  const started = useRef(false);
   const scrollRef = useRef<ScrollView>(null);
-  useEffect(() => { if (!started.current) { started.current = true; requestReply([]); } }, []);
   async function requestReply(conversation: ChatMessage[]) {
     setSending(true); setError('');
-    const { data, error: functionError } = await supabase.functions.invoke('current-health-chat', { body: { messages: conversation } });
+    const { data, error: functionError } = await supabase.functions.invoke('current-health-chat', { body: { messages: conversation.slice(1) } });
     const reply = typeof data?.reply === 'string' ? data.reply.trim().replace(/^"|"$/g, '') : '';
     let functionMessage = '';
     if (functionError instanceof FunctionsHttpError) { try { const details = await functionError.context.json(); functionMessage = details?.error ?? ''; } catch {} }
