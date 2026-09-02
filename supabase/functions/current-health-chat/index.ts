@@ -4,6 +4,8 @@ const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
+const isSafetyClassifierReply = (content: string) =>
+  content.replace(/[^a-z]+/gi, " ").trim().toLowerCase() === "user safety safe response safety safe";
 
 const assessmentPrompt = `You are an Ayurvedic diagnostic assessment assistant for Ayurnidaan.
 The user's Prakriti will be provided as context. The user will begin the conversation by describing a symptom, complaint, or health concern. Your task is to interact conversationally with the user and determine which Doshas are currently imbalanced (Vikriti): Vata, Pitta, and/or Kapha.
@@ -73,19 +75,24 @@ Deno.serve(async (request) => {
       ? `The user has now answered all five model-generated follow-up questions and the application's sixth and final question, "Any more complaints?" Do not ask another question. Return ONLY one permitted final conclusion in the exact required format, with no other text.`
       : "";
 
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", "X-OpenRouter-Title": "Ayurnidaan Current Health Assessment" },
-      body: JSON.stringify({ model, messages: [{ role: "system", content: `${assessmentPrompt}\n\n${context}${conclusionInstruction ? `\n\n${conclusionInstruction}` : ""}` }, ...messages], temperature: 0.2 }),
-    });
-    if (!response.ok) {
-      const providerError = (await response.text()).slice(0, 500);
-      console.error("OpenRouter request failed", response.status, providerError);
-      if (response.status === 429) throw new Error("The free AI model is temporarily rate-limited. Please try again shortly.");
-      throw new Error(`The assessment AI is temporarily unavailable (${response.status}). Please try again.`);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", "X-OpenRouter-Title": "Ayurnidaan Current Health Assessment" },
+        body: JSON.stringify({ model, messages: [{ role: "system", content: `${assessmentPrompt}\n\n${context}${conclusionInstruction ? `\n\n${conclusionInstruction}` : ""}` }, ...messages], temperature: 0.2 }),
+      });
+      if (!response.ok) {
+        const providerError = (await response.text()).slice(0, 500);
+        console.error("OpenRouter request failed", response.status, providerError);
+        if (response.status === 429) throw new Error("The free AI model is temporarily rate-limited. Please try again shortly.");
+        throw new Error(`The assessment AI is temporarily unavailable (${response.status}). Please try again.`);
+      }
+      const data = await response.json();
+      const reply = data.choices?.[0]?.message?.content?.trim() ?? "";
+      if (!isSafetyClassifierReply(reply)) return Response.json({ reply }, { headers: corsHeaders });
+      console.warn(`Rejected safety-classifier reply on attempt ${attempt + 1}`);
     }
-    const data = await response.json();
-    return Response.json({ reply: data.choices?.[0]?.message?.content ?? "" }, { headers: corsHeaders });
+    throw new Error("The free AI router repeatedly selected a safety classifier. Please try again.");
   } catch (error) {
     console.error("Current health assessment failed", error instanceof Error ? error.message : "Unexpected error");
     return Response.json({ error: error instanceof Error ? error.message : "Unexpected error" }, { status: 500, headers: corsHeaders });
