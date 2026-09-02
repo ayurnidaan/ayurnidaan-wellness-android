@@ -4,7 +4,7 @@ import { StatusBar } from 'expo-status-bar';
 import * as AuthSession from 'expo-auth-session';
 import * as WebBrowser from 'expo-web-browser';
 import * as ImagePicker from 'expo-image-picker';
-import type { Session } from '@supabase/supabase-js';
+import { FunctionsHttpError, type Session } from '@supabase/supabase-js';
 import { supabase } from './src/lib/supabase';
 import { colors } from './src/theme';
 
@@ -394,7 +394,9 @@ function CurrentHealthChat({ session, onBack, onComplete }: { session: Session |
     setSending(true); setError('');
     const { data, error: functionError } = await supabase.functions.invoke('current-health-chat', { body: { messages: conversation } });
     const reply = typeof data?.reply === 'string' ? data.reply.trim().replace(/^"|"$/g, '') : '';
-    if (functionError || !reply) { setSending(false); setError(data?.error || functionError?.message || 'Could not continue the assessment. Please try again.'); return; }
+    let functionMessage = '';
+    if (functionError instanceof FunctionsHttpError) { try { const details = await functionError.context.json(); functionMessage = details?.error ?? ''; } catch {} }
+    if (functionError || !reply) { setSending(false); setError(functionMessage || data?.error || functionError?.message || 'Could not continue the assessment. Please try again.'); return; }
     const completed = currentHealthConclusions.includes(reply);
     const completedConversation: ChatMessage[] = [...conversation, { role: 'assistant', content: reply }];
     setMessages(completedConversation); setSending(false);

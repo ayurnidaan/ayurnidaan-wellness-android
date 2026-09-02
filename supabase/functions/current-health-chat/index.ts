@@ -90,7 +90,10 @@ Deno.serve(async (request) => {
     const prakritiResponse = await fetch(`${supabaseUrl}/rest/v1/prakriti_assessments?select=vata_percentage,pitta_percentage,kapha_percentage&user_id=eq.${encodeURIComponent(user.id)}&order=completed_at.desc&limit=1`, {
       headers: { Authorization: authorization, apikey: anonKey },
     });
-    if (!prakritiResponse.ok) throw new Error("Could not load Prakriti context");
+    if (!prakritiResponse.ok) {
+      console.error("Prakriti lookup failed", prakritiResponse.status);
+      throw new Error("Could not load your Prakriti context");
+    }
     const [prakriti] = await prakritiResponse.json();
     if (!prakriti) return Response.json({ error: "Complete the Prakriti assessment first" }, { status: 400, headers: corsHeaders });
     const context = `The user's latest Prakriti is Vata ${prakriti.vata_percentage}%, Pitta ${prakriti.pitta_percentage}%, and Kapha ${prakriti.kapha_percentage}%.`;
@@ -100,10 +103,16 @@ Deno.serve(async (request) => {
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", "X-OpenRouter-Title": "Ayurnidaan Current Health Assessment" },
       body: JSON.stringify({ model, messages: [{ role: "system", content: `${assessmentPrompt}\n\n${context}` }, ...messages], temperature: 0.2 }),
     });
-    if (!response.ok) throw new Error(`OpenRouter request failed (${response.status})`);
+    if (!response.ok) {
+      const providerError = (await response.text()).slice(0, 500);
+      console.error("OpenRouter request failed", response.status, providerError);
+      if (response.status === 429) throw new Error("The free AI model is temporarily rate-limited. Please try again shortly.");
+      throw new Error(`The assessment AI is temporarily unavailable (${response.status}). Please try again.`);
+    }
     const data = await response.json();
     return Response.json({ reply: data.choices?.[0]?.message?.content ?? "" }, { headers: corsHeaders });
   } catch (error) {
+    console.error("Current health assessment failed", error instanceof Error ? error.message : "Unexpected error");
     return Response.json({ error: error instanceof Error ? error.message : "Unexpected error" }, { status: 500, headers: corsHeaders });
   }
 });
