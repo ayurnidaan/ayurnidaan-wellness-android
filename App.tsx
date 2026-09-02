@@ -8,7 +8,7 @@ import { supabase } from './src/lib/supabase';
 import { colors } from './src/theme';
 
 WebBrowser.maybeCompleteAuthSession();
-type Screen = 'splash' | 'intro' | 'auth' | 'account' | 'profile' | 'confirmation' | 'home' | 'prakriti';
+type Screen = 'splash' | 'intro' | 'auth' | 'account' | 'profile' | 'confirmation' | 'home' | 'prakriti' | 'currentHealth';
 type Dosha = 'vata' | 'pitta' | 'kapha';
 type AssessmentAnswer = 'A' | 'B' | 'C';
 type AssessmentQuestion = { prompt: string; options: Record<AssessmentAnswer, string> };
@@ -39,8 +39,9 @@ export default function App() {
   if (screen === 'account') return <AccountScreen session={session} onComplete={() => setScreen('profile')} />;
   if (screen === 'profile') return <ProfileScreen session={session} onComplete={() => setScreen('confirmation')} />;
   if (screen === 'confirmation') return <ConfirmationScreen session={session} onContinue={() => setScreen('home')} />;
-  if (screen === 'prakriti') return <PrakritiAssessment onExit={() => setScreen('home')} />;
-  return <HomeScreen session={session} onStartAssessment={() => setScreen('prakriti')} />;
+  if (screen === 'prakriti') return <PrakritiAssessment session={session} onExit={() => setScreen('home')} />;
+  if (screen === 'currentHealth') return <CurrentHealthAssessment onExit={() => setScreen('home')} />;
+  return <HomeScreen session={session} onStartPrakriti={() => setScreen('prakriti')} onStartCurrentHealth={() => setScreen('currentHealth')} />;
 }
 
 function BrandSplash({ onFinish }: { onFinish: () => void }) {
@@ -178,19 +179,34 @@ function ConfirmationScreen({ session, onContinue }: { session: Session | null; 
   </ScreenFrame>;
 }
 
-function PrakritiAssessment({ onExit }: { onExit: () => void }) {
+function PrakritiAssessment({ session, onExit }: { session: Session | null; onExit: () => void }) {
   const [stage, setStage] = useState<'intro' | 'questions' | 'result'>('intro');
   const [questionIndex, setQuestionIndex] = useState(0);
   const [answers, setAnswers] = useState<(AssessmentAnswer | null)[]>(assessmentQuestions.map(() => null));
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
   const currentAnswer = answers[questionIndex];
 
   function chooseAnswer(answer: AssessmentAnswer) {
     setAnswers((values) => values.map((value, index) => index === questionIndex ? answer : value));
   }
-  function continueQuestion() {
+  async function continueQuestion() {
     if (!currentAnswer) return;
-    if (questionIndex === assessmentQuestions.length - 1) setStage('result');
-    else setQuestionIndex((value) => value + 1);
+    if (questionIndex !== assessmentQuestions.length - 1) return setQuestionIndex((value) => value + 1);
+    if (!session?.user.id) return setSaveError('Please sign in again before saving your assessment.');
+    setSaving(true); setSaveError('');
+    const percentages = calculateDoshaPercentages(answers);
+    const { error } = await supabase.from('prakriti_assessments').insert({
+      user_id: session.user.id,
+      vata_percentage: percentages.vata,
+      pitta_percentage: percentages.pitta,
+      kapha_percentage: percentages.kapha,
+      answers: answers.map((answer, index) => ({ question_number: index + 1, answer })),
+      question_count: answers.length,
+    });
+    setSaving(false);
+    if (error) return setSaveError(error.message);
+    setStage('result');
   }
   function goBack() {
     if (questionIndex === 0) setStage('intro');
@@ -220,9 +236,10 @@ function PrakritiAssessment({ onExit }: { onExit: () => void }) {
       </View>
       <View style={styles.questionActions}>
         <SecondaryButton label="Back" onPress={goBack} />
-        <View style={styles.continueHalf}><PrimaryButton label={questionIndex === assessmentQuestions.length - 1 ? 'See Results' : 'Continue'} onPress={continueQuestion} /></View>
+        <View style={styles.continueHalf}><PrimaryButton label={questionIndex === assessmentQuestions.length - 1 ? 'See Results' : 'Continue'} loading={saving} onPress={continueQuestion} /></View>
       </View>
       {!currentAnswer ? <Text style={styles.answerHint}>Select one option to continue</Text> : null}
+      {saveError ? <Text style={styles.error}>{saveError}</Text> : null}
     </View>
   </SafeAreaView>;
 }
@@ -307,9 +324,60 @@ function getResultMeaning(dominant: string[]) {
   return meanings[dominant[0]];
 }
 
-function HomeScreen({ session, onStartAssessment }: { session: Session | null; onStartAssessment: () => void }) {
+function CurrentHealthAssessment({ onExit }: { onExit: () => void }) {
+  const [started, setStarted] = useState(false);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [notice, setNotice] = useState('');
+  const symptoms = ['Bloating / Gas', 'Acidity / Heartburn', 'Constipation', 'Fatigue / Tiredness', 'Poor Sleep'];
+  function toggleSymptom(symptom: string) {
+    setNotice('');
+    setSelected((values) => values.includes(symptom) ? values.filter((value) => value !== symptom) : [...values, symptom]);
+  }
+  if (!started) return <SafeAreaView style={styles.assessmentSafe}>
+    <StatusBar style="dark" />
+    <View style={styles.healthIntroPage}>
+      <BackButton onPress={onExit} />
+      <View style={styles.healthIntroContent}>
+        <Text style={styles.assessmentIntroTitle}>How Are You{`\n`}Feeling Right Now?</Text>
+        <Text style={styles.assessmentIntroCopy}>Help us understand your current health so we can give you better guidance.</Text>
+        <MeditationArt />
+        <View style={styles.assessmentFacts}>
+          <AssessmentFact icon="♙" text="Share your symptoms" />
+          <AssessmentFact icon="◷" text="Lifestyle & health habits" />
+          <AssessmentFact icon="▣" text="Medications & conditions" />
+        </View>
+      </View>
+      <PrimaryButton label="Start Assessment" onPress={() => setStarted(true)} />
+    </View>
+  </SafeAreaView>;
+  return <SafeAreaView style={styles.assessmentSafe}>
+    <StatusBar style="dark" />
+    <View style={styles.questionPage}>
+      <BackButton onPress={() => setStarted(false)} /><Text style={styles.assessmentPageTitle}>Current Health Assessment</Text>
+      <Text style={styles.questionCount}>Step 1 of 6</Text><View style={styles.progressTrack}><View style={[styles.progressFill, { width: '16.67%' }]} /></View>
+      <Text style={styles.healthQuestion}>Do you experience any of the following?</Text><Text style={styles.selectAllHint}>(Select all that apply)</Text>
+      <View style={styles.symptomList}>{symptoms.map((symptom) => { const checked = selected.includes(symptom); return <Pressable key={symptom} accessibilityRole="checkbox" accessibilityState={{ checked }} onPress={() => toggleSymptom(symptom)} style={[styles.symptomOption, checked && styles.symptomOptionSelected]}><View style={[styles.symptomCheckbox, checked && styles.symptomCheckboxSelected]}>{checked ? <Text style={styles.symptomCheck}>✓</Text> : null}</View><Text style={styles.symptomLabel}>{symptom}</Text></Pressable>; })}</View>
+      <View style={styles.questionActions}><SecondaryButton label="Back" onPress={() => setStarted(false)} /><View style={styles.continueHalf}><PrimaryButton label="Continue" onPress={() => setNotice('The remaining Current Health questions will be added when their content and scoring rules are provided.')} /></View></View>
+      {notice ? <Text style={styles.notice}>{notice}</Text> : null}
+    </View>
+  </SafeAreaView>;
+}
+
+function MeditationArt() {
+  return <View style={styles.meditationArt}><View style={styles.meditationHalo} /><View style={styles.meditationHead} /><View style={styles.meditationBody} /><View style={styles.meditationArms} /><View style={styles.meditationLegs} /><View style={[styles.meditationLeaf, styles.meditationLeafLeft]} /><View style={[styles.meditationLeaf, styles.meditationLeafRight]} /></View>;
+}
+
+function HomeScreen({ session, onStartPrakriti, onStartCurrentHealth }: { session: Session | null; onStartPrakriti: () => void; onStartCurrentHealth: () => void }) {
   const fullName = session?.user.user_metadata.full_name?.trim();
   const firstName = fullName?.split(/\s+/)[0] || 'there';
+  const [hasPrakriti, setHasPrakriti] = useState(false);
+  useEffect(() => {
+    if (!session?.user.id) return;
+    let active = true;
+    supabase.from('prakriti_assessments').select('id').eq('user_id', session.user.id).order('completed_at', { ascending: false }).limit(1)
+      .then(({ data }) => { if (active) setHasPrakriti(Boolean(data?.length)); });
+    return () => { active = false; };
+  }, [session?.user.id]);
   const features = [
     { icon: '🥗', label: 'Food' }, { icon: '🧘', label: 'Yoga' },
     { icon: '◉', label: 'Pranayama' }, { icon: '◎', label: 'Panchakarma' },
@@ -325,9 +393,9 @@ function HomeScreen({ session, onStartAssessment }: { session: Session | null; o
       <View style={styles.dashboardBody}>
         <View style={styles.assessmentCard}>
           <Text style={styles.assessmentTitle}>Complete Your Assessments{`\n`}for Personalized Guidance</Text>
-          <AssessmentItem number="1" title="Prakriti Assessment" copy="Understand your natural constitution" />
+          <AssessmentItem number={hasPrakriti ? '✓' : '1'} title="Prakriti Assessment" copy={hasPrakriti ? 'Completed · Tap to retake' : 'Understand your natural constitution'} completed={hasPrakriti} onPress={hasPrakriti ? onStartPrakriti : undefined} />
           <AssessmentItem number="2" title="Current Health Assessment" copy="Tell us how you feel right now" />
-          <Pressable onPress={onStartAssessment} style={({ pressed }) => [styles.startButton, pressed && styles.pressed]}><Text style={styles.startButtonText}>Start Now</Text></Pressable>
+          <Pressable onPress={hasPrakriti ? onStartCurrentHealth : onStartPrakriti} style={({ pressed }) => [styles.startButton, pressed && styles.pressed]}><Text style={styles.startButtonText}>{hasPrakriti ? 'Start Current Health Assessment' : 'Start Now'}</Text></Pressable>
         </View>
         <Text style={styles.exploreTitle}>Explore Ayurnidaan</Text>
         <View style={styles.featureGrid}>{features.map((feature) => <FeatureTile key={feature.label} {...feature} />)}</View>
@@ -351,7 +419,7 @@ function SecondaryButton({ label, onPress }: { label: string; onPress: () => voi
 function SocialButton({ symbol, label, loading, onPress }: { symbol: string; label: string; loading?: boolean; onPress: () => void }) { return <Pressable accessibilityLabel={`Continue with ${label}`} disabled={loading} onPress={onPress} style={({ pressed }) => [styles.socialButton, pressed && styles.pressed]}>{loading ? <ActivityIndicator color={colors.primaryDark} /> : <Text style={[styles.socialSymbol, label === 'Google' && styles.google]}>{symbol}</Text>}<Text style={styles.socialLabel}>{label}</Text></Pressable>; }
 function Divider({ label }: { label: string }) { return <View style={styles.dividerRow}><View style={styles.divider} /><Text style={styles.dividerText}>{label}</Text><View style={styles.divider} /></View>; }
 function BackButton({ onPress }: { onPress: () => void }) { return <Pressable accessibilityLabel="Go back" onPress={onPress} style={styles.back}><Text style={styles.backText}>‹</Text></Pressable>; }
-function AssessmentItem({ number, title, copy }: { number: string; title: string; copy: string }) { return <View style={styles.assessmentItem}><View style={styles.numberBadge}><Text style={styles.numberText}>{number}</Text></View><View style={styles.assessmentText}><Text style={styles.assessmentItemTitle}>{title}</Text><Text style={styles.assessmentCopy}>{copy}</Text></View></View>; }
+function AssessmentItem({ number, title, copy, completed = false, onPress }: { number: string; title: string; copy: string; completed?: boolean; onPress?: () => void }) { const content = <><View style={[styles.numberBadge, completed && styles.completedBadge]}><Text style={styles.numberText}>{number}</Text></View><View style={styles.assessmentText}><Text style={styles.assessmentItemTitle}>{title}</Text><Text style={styles.assessmentCopy}>{copy}</Text></View></>; return onPress ? <Pressable accessibilityRole="button" onPress={onPress} style={({ pressed }) => [styles.assessmentItem, pressed && styles.pressed]}>{content}</Pressable> : <View style={styles.assessmentItem}>{content}</View>; }
 function FeatureTile({ icon, label }: { icon: string; label: string }) { return <Pressable accessibilityLabel={label} onPress={() => {}} style={({ pressed }) => [styles.featureTile, pressed && styles.pressed]}><Text style={styles.featureIcon}>{icon}</Text><Text style={styles.featureLabel}>{label}</Text></Pressable>; }
 function NavItem({ icon, label, active = false }: { icon: string; label: string; active?: boolean }) { return <Pressable accessibilityLabel={label} onPress={() => {}} style={styles.navItem}><Text style={[styles.navIcon, active && styles.navActive]}>{icon}</Text><Text style={[styles.navLabel, active && styles.navActive]}>{label}</Text>{active ? <View style={styles.navIndicator} /> : null}</Pressable>; }
 function extractAuthParams(url: string) { const fragment = url.split('#')[1] ?? url.split('?')[1] ?? ''; return Object.fromEntries(new URLSearchParams(fragment)); }
@@ -373,5 +441,6 @@ const styles = StyleSheet.create({
   assessmentSafe: { backgroundColor: '#FBF8EF', flex: 1 }, assessmentIntroPage: { flex: 1, paddingBottom: 28, paddingHorizontal: 24, paddingTop: 18 }, assessmentIntroContent: { flex: 1, justifyContent: 'center', paddingBottom: 35 }, assessmentEmblem: { alignItems: 'center', alignSelf: 'center', backgroundColor: '#E9F0E7', borderRadius: 34, height: 68, justifyContent: 'center', marginBottom: 24, width: 68 }, assessmentEmblemText: { color: '#075A3F', fontSize: 36 }, assessmentIntroTitle: { color: '#202921', fontFamily: serif, fontSize: 29, fontWeight: '700', lineHeight: 37, textAlign: 'center' }, assessmentIntroCopy: { color: '#606963', fontSize: 14, lineHeight: 22, marginTop: 18, textAlign: 'center' }, assessmentFacts: { gap: 19, marginTop: 38 }, assessmentFact: { alignItems: 'center', flexDirection: 'row', gap: 13 }, factIcon: { alignItems: 'center', borderColor: '#7A9589', borderRadius: 14, borderWidth: 1, height: 28, justifyContent: 'center', width: 28 }, factIconText: { color: '#075A3F', fontSize: 14, fontWeight: '700' }, factTextWrap: { flex: 1 }, factText: { color: '#303A34', fontSize: 14, fontWeight: '600' }, factDetail: { color: '#8A8F8B', fontSize: 11, marginTop: 2 },
   questionPage: { flex: 1, paddingBottom: 28, paddingHorizontal: 24, paddingTop: 18 }, assessmentPageTitle: { color: '#202921', fontFamily: serif, fontSize: 24, fontWeight: '700' }, questionCount: { color: '#6D756F', fontSize: 13, fontWeight: '600', marginTop: 23 }, progressTrack: { backgroundColor: '#E2E3DB', borderRadius: 4, height: 6, marginTop: 10, overflow: 'hidden' }, progressFill: { backgroundColor: '#075A3F', borderRadius: 4, height: '100%' }, questionPrompt: { color: '#26312B', fontFamily: serif, fontSize: 25, fontWeight: '700', lineHeight: 33, marginBottom: 27, marginTop: 38 }, answerList: { gap: 13 }, answerOption: { alignItems: 'center', backgroundColor: '#FFFEFA', borderColor: '#DEDED4', borderRadius: 12, borderWidth: 1, flexDirection: 'row', justifyContent: 'space-between', minHeight: 66, paddingHorizontal: 15, paddingVertical: 10 }, answerOptionSelected: { backgroundColor: '#F3F8F4', borderColor: '#075A3F', borderWidth: 1.5 }, answerTextWrap: { alignItems: 'center', flex: 1, flexDirection: 'row', gap: 12 }, answerLetter: { color: '#075A3F', fontSize: 14, fontWeight: '800' }, answerLabel: { color: '#38423C', flex: 1, fontSize: 15, fontWeight: '600' }, radio: { alignItems: 'center', borderColor: '#C8CBC5', borderRadius: 10, borderWidth: 1.5, height: 20, justifyContent: 'center', width: 20 }, radioSelected: { borderColor: '#075A3F' }, radioDot: { backgroundColor: '#075A3F', borderRadius: 5, height: 10, width: 10 }, questionActions: { flexDirection: 'row', gap: 12, marginTop: 'auto', paddingTop: 25 }, continueHalf: { flex: 1 }, answerHint: { color: '#8A6D2F', fontSize: 11, marginTop: 9, textAlign: 'right' },
   resultPage: { flexGrow: 1, paddingBottom: 30, paddingHorizontal: 25, paddingTop: 40 }, resultEyebrow: { color: '#B08A3D', fontSize: 11, fontWeight: '800', letterSpacing: 1.5, textAlign: 'center' }, resultTitle: { color: '#075A3F', fontFamily: serif, fontSize: 33, fontWeight: '700', marginTop: 8, textAlign: 'center' }, resultDominant: { color: '#34443C', fontSize: 16, fontWeight: '700', marginTop: 7, textAlign: 'center' }, chartRow: { alignItems: 'center', flexDirection: 'row', justifyContent: 'center', marginVertical: 35 }, doshaChart: { height: 160, position: 'relative', width: 160 }, chartSegment: { borderRadius: 3, height: 18, left: 77.5, position: 'absolute', top: 71, width: 5 }, chartCenter: { alignItems: 'center', backgroundColor: '#FBF8EF', borderColor: '#EEE7D8', borderRadius: 49, borderWidth: 1, height: 98, justifyContent: 'center', left: 31, position: 'absolute', top: 31, width: 98 }, chartCenterLabel: { color: '#59645E', fontSize: 12 }, chartCenterValue: { color: '#24312B', fontFamily: serif, fontSize: 24, fontWeight: '700', marginTop: 2 }, legend: { gap: 14, marginLeft: 26 }, legendItem: { alignItems: 'center', flexDirection: 'row', minWidth: 100 }, legendDot: { borderRadius: 5, height: 10, marginRight: 8, width: 10 }, legendName: { color: '#3E4943', flex: 1, fontSize: 13, fontWeight: '600' }, legendValue: { color: '#252E29', fontSize: 13, fontWeight: '800', marginLeft: 8 }, resultMeaning: { backgroundColor: '#FFFDF7', borderColor: '#E7E0CE', borderRadius: 17, borderWidth: 1, marginBottom: 28, padding: 19 }, resultSectionTitle: { color: '#29352F', fontFamily: serif, fontSize: 17, fontWeight: '700', marginBottom: 8, marginTop: 7 }, resultBody: { color: '#606963', fontSize: 13, lineHeight: 20, marginBottom: 16 }, tendency: { color: '#606963', fontSize: 13, lineHeight: 20, marginBottom: 5 },
-  homeSafe: { backgroundColor: '#004735', flex: 1 }, homeScroll: { backgroundColor: '#FBF8EF', flexGrow: 1, paddingBottom: 112 }, homeHeader: { alignItems: 'center', backgroundColor: '#004735', flexDirection: 'row', justifyContent: 'space-between', minHeight: 198, paddingBottom: 60, paddingHorizontal: 25, paddingTop: 29 }, greeting: { color: '#D9E7DF', fontSize: 19, fontWeight: '500', lineHeight: 25 }, greetingName: { color: '#FFF', fontFamily: serif, fontSize: 40, fontWeight: '700', lineHeight: 47, marginTop: 2 }, bell: { alignItems: 'center', borderColor: '#C7DED3', borderRadius: 22, borderWidth: 1.2, height: 44, justifyContent: 'center', width: 44 }, bellIcon: { color: '#FFF', fontSize: 26, transform: [{ rotate: '180deg' }] }, notificationDot: { backgroundColor: '#E5B54D', borderRadius: 4, height: 8, position: 'absolute', right: 4, top: 3, width: 8 }, dashboardBody: { paddingHorizontal: 18 }, assessmentCard: { backgroundColor: '#FFFDF7', borderColor: '#E7E0CE', borderRadius: 21, borderWidth: 1, elevation: 4, gap: 22, marginTop: -44, padding: 23, shadowColor: '#17352E', shadowOffset: { width: 0, height: 7 }, shadowOpacity: .1, shadowRadius: 14 }, assessmentTitle: { color: '#28332D', fontFamily: serif, fontSize: 21, fontWeight: '700', lineHeight: 29 }, assessmentItem: { alignItems: 'flex-start', flexDirection: 'row', gap: 15 }, numberBadge: { alignItems: 'center', backgroundColor: '#075A3F', borderRadius: 16, height: 32, justifyContent: 'center', marginTop: 2, width: 32 }, numberText: { color: '#FFF', fontSize: 15, fontWeight: '800' }, assessmentText: { flex: 1 }, assessmentItemTitle: { color: '#303A34', fontSize: 16, fontWeight: '700' }, assessmentCopy: { color: '#737B75', fontSize: 14, lineHeight: 20, marginTop: 4 }, startButton: { alignItems: 'center', backgroundColor: '#075A3F', borderRadius: 11, justifyContent: 'center', minHeight: 51 }, startButtonText: { color: '#FFF', fontSize: 16, fontWeight: '700' }, exploreTitle: { color: '#28332D', fontFamily: serif, fontSize: 22, fontWeight: '700', marginBottom: 17, marginTop: 29 }, featureGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 }, featureTile: { alignItems: 'center', backgroundColor: '#FFF6E6', borderColor: '#F3E7D1', borderRadius: 16, borderWidth: 1, height: 108, justifyContent: 'center', width: '30.5%' }, featureIcon: { fontSize: 31 }, featureLabel: { color: '#3D4640', fontSize: 12, fontWeight: '700', marginTop: 10, textAlign: 'center' }, bottomNav: { alignItems: 'center', backgroundColor: '#FFF', borderColor: '#E8E3D8', borderTopWidth: 1, bottom: 0, flexDirection: 'row', height: 86, justifyContent: 'space-around', left: 0, paddingBottom: 8, position: 'absolute', right: 0 }, navItem: { alignItems: 'center', flex: 1, justifyContent: 'center' }, navIcon: { color: '#818A84', fontSize: 27, fontWeight: '700' }, navLabel: { color: '#818A84', fontSize: 11, marginTop: 4 }, navActive: { color: '#075A3F', fontWeight: '800' }, navIndicator: { backgroundColor: '#075A3F', borderRadius: 2, height: 3, marginTop: 5, width: 20 },
+  healthIntroPage: { flex: 1, paddingBottom: 28, paddingHorizontal: 24, paddingTop: 18 }, healthIntroContent: { flex: 1, justifyContent: 'center', paddingBottom: 22 }, meditationArt: { alignSelf: 'center', height: 190, marginTop: 25, position: 'relative', width: 250 }, meditationHalo: { backgroundColor: '#EDF2DD', borderRadius: 70, height: 140, left: 55, position: 'absolute', top: 24, width: 140 }, meditationHead: { backgroundColor: '#B87544', borderRadius: 16, height: 31, left: 109, position: 'absolute', top: 28, width: 31 }, meditationBody: { backgroundColor: '#52704B', borderTopLeftRadius: 24, borderTopRightRadius: 24, height: 75, left: 91, position: 'absolute', top: 56, width: 67 }, meditationArms: { backgroundColor: '#B87544', borderRadius: 8, height: 13, left: 57, position: 'absolute', top: 92, transform: [{ rotate: '-4deg' }], width: 137 }, meditationLegs: { backgroundColor: '#465D3F', borderRadius: 30, height: 37, left: 43, position: 'absolute', top: 125, width: 164 }, meditationLeaf: { backgroundColor: '#83A86B', borderBottomLeftRadius: 24, borderTopRightRadius: 24, height: 74, position: 'absolute', top: 82, width: 35 }, meditationLeafLeft: { left: 25, transform: [{ rotate: '-35deg' }] }, meditationLeafRight: { right: 25, transform: [{ rotate: '35deg' }] }, healthQuestion: { color: '#26312B', fontFamily: serif, fontSize: 23, fontWeight: '700', lineHeight: 31, marginTop: 30 }, selectAllHint: { color: '#68716C', fontSize: 12, marginBottom: 18, marginTop: 6 }, symptomList: { gap: 10 }, symptomOption: { alignItems: 'center', backgroundColor: '#FFFEFA', borderColor: '#DEDED4', borderRadius: 10, borderWidth: 1, flexDirection: 'row', minHeight: 49, paddingHorizontal: 13 }, symptomOptionSelected: { backgroundColor: '#F3F8F4', borderColor: '#A9C4B6' }, symptomCheckbox: { alignItems: 'center', borderColor: '#C5C8C2', borderRadius: 4, borderWidth: 1.2, height: 21, justifyContent: 'center', marginRight: 12, width: 21 }, symptomCheckboxSelected: { backgroundColor: '#075A3F', borderColor: '#075A3F' }, symptomCheck: { color: '#FFF', fontSize: 13, fontWeight: '800' }, symptomLabel: { color: '#3E4742', fontSize: 14, fontWeight: '500' },
+  homeSafe: { backgroundColor: '#004735', flex: 1 }, homeScroll: { backgroundColor: '#FBF8EF', flexGrow: 1, paddingBottom: 112 }, homeHeader: { alignItems: 'center', backgroundColor: '#004735', flexDirection: 'row', justifyContent: 'space-between', minHeight: 198, paddingBottom: 60, paddingHorizontal: 25, paddingTop: 29 }, greeting: { color: '#D9E7DF', fontSize: 19, fontWeight: '500', lineHeight: 25 }, greetingName: { color: '#FFF', fontFamily: serif, fontSize: 40, fontWeight: '700', lineHeight: 47, marginTop: 2 }, bell: { alignItems: 'center', borderColor: '#C7DED3', borderRadius: 22, borderWidth: 1.2, height: 44, justifyContent: 'center', width: 44 }, bellIcon: { color: '#FFF', fontSize: 26, transform: [{ rotate: '180deg' }] }, notificationDot: { backgroundColor: '#E5B54D', borderRadius: 4, height: 8, position: 'absolute', right: 4, top: 3, width: 8 }, dashboardBody: { paddingHorizontal: 18 }, assessmentCard: { backgroundColor: '#FFFDF7', borderColor: '#E7E0CE', borderRadius: 21, borderWidth: 1, elevation: 4, gap: 22, marginTop: -44, padding: 23, shadowColor: '#17352E', shadowOffset: { width: 0, height: 7 }, shadowOpacity: .1, shadowRadius: 14 }, assessmentTitle: { color: '#28332D', fontFamily: serif, fontSize: 21, fontWeight: '700', lineHeight: 29 }, assessmentItem: { alignItems: 'flex-start', flexDirection: 'row', gap: 15 }, numberBadge: { alignItems: 'center', backgroundColor: '#075A3F', borderRadius: 16, height: 32, justifyContent: 'center', marginTop: 2, width: 32 }, completedBadge: { backgroundColor: '#3E8A52' }, numberText: { color: '#FFF', fontSize: 15, fontWeight: '800' }, assessmentText: { flex: 1 }, assessmentItemTitle: { color: '#303A34', fontSize: 16, fontWeight: '700' }, assessmentCopy: { color: '#737B75', fontSize: 14, lineHeight: 20, marginTop: 4 }, startButton: { alignItems: 'center', backgroundColor: '#075A3F', borderRadius: 11, justifyContent: 'center', minHeight: 51 }, startButtonText: { color: '#FFF', fontSize: 15, fontWeight: '700', textAlign: 'center' }, exploreTitle: { color: '#28332D', fontFamily: serif, fontSize: 22, fontWeight: '700', marginBottom: 17, marginTop: 29 }, featureGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 }, featureTile: { alignItems: 'center', backgroundColor: '#FFF6E6', borderColor: '#F3E7D1', borderRadius: 16, borderWidth: 1, height: 108, justifyContent: 'center', width: '30.5%' }, featureIcon: { fontSize: 31 }, featureLabel: { color: '#3D4640', fontSize: 12, fontWeight: '700', marginTop: 10, textAlign: 'center' }, bottomNav: { alignItems: 'center', backgroundColor: '#FFF', borderColor: '#E8E3D8', borderTopWidth: 1, bottom: 0, flexDirection: 'row', height: 86, justifyContent: 'space-around', left: 0, paddingBottom: 8, position: 'absolute', right: 0 }, navItem: { alignItems: 'center', flex: 1, justifyContent: 'center' }, navIcon: { color: '#818A84', fontSize: 27, fontWeight: '700' }, navLabel: { color: '#818A84', fontSize: 11, marginTop: 4 }, navActive: { color: '#075A3F', fontWeight: '800' }, navIndicator: { backgroundColor: '#075A3F', borderRadius: 2, height: 3, marginTop: 5, width: 20 },
 });
