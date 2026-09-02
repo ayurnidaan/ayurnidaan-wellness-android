@@ -30,14 +30,20 @@ Vata and Pitta
 Vata and Kapha
 Pitta and Kapha
 Vata, Pitta and Kapha
-When the application explicitly instructs you to conclude, stop asking questions and return ONLY the final conclusion in exactly this format:
-"Your X doshas are imbalanced"
+When the application explicitly instructs you to conclude, stop asking questions and return ONLY these two lines in exactly this format:
+Your X doshas are imbalanced
+Symptoms: symptom 1 | symptom 2 | symptom 3
 Replace X with the identified Dosha or Doshas.
 Examples:
-"Your Vata dosha is imbalanced"
-"Your Vata and Pitta doshas are imbalanced"
-"Your Vata, Pitta and Kapha doshas are imbalanced"
-Do not provide explanations, reasoning, confidence scores, qualifications, or any additional text in the final conclusion.`;
+Your Vata dosha is imbalanced
+Symptoms: constipation | disturbed sleep | bloating
+
+Your Vata and Pitta doshas are imbalanced
+Symptoms: irregular appetite | acidity | irritability
+
+Your Vata, Pitta and Kapha doshas are imbalanced
+Symptoms: variable digestion | fatigue | disturbed sleep
+Do not add bullets, explanations, reasoning, confidence scores, qualifications, or any text beyond those two required lines.`;
 
 Deno.serve(async (request) => {
   if (request.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -72,7 +78,7 @@ Deno.serve(async (request) => {
     if (!prakriti) return Response.json({ error: "Complete the Prakriti assessment first" }, { status: 400, headers: corsHeaders });
     const context = `The user's latest Prakriti is Vata ${prakriti.vata_percentage}%, Pitta ${prakriti.pitta_percentage}%, and Kapha ${prakriti.kapha_percentage}%.`;
     const conclusionInstruction = forceConclusion
-      ? `The user has now answered all five model-generated follow-up questions and the application's sixth and final question, "Any more complaints?" Do not ask another question. Return ONLY one permitted final conclusion in the exact required format, with no other text.`
+      ? `The user has now answered all five model-generated follow-up questions and the application's sixth and final question, "Any more complaints?" Do not ask another question. Return ONLY the two required lines in the exact format defined above, with no other text. Include the user's key current symptoms as short phrases separated by | on the Symptoms line.`
       : "";
 
     for (let attempt = 0; attempt < 3; attempt += 1) {
