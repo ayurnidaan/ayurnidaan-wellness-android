@@ -376,11 +376,20 @@ function CurrentHealthAssessment({ session, onExit }: { session: Session | null;
   return <CurrentHealthChat session={session} onBack={() => setStage('intro')} onComplete={() => setStage('ready')} />;
 }
 
-const currentHealthConclusions = [
-  'Your Vata dosha is imbalanced', 'Your Pitta dosha is imbalanced', 'Your Kapha dosha is imbalanced',
-  'Your Vata and Pitta doshas are imbalanced', 'Your Vata and Kapha doshas are imbalanced', 'Your Pitta and Kapha doshas are imbalanced',
-  'Your Vata, Pitta and Kapha doshas are imbalanced',
+type VikritiDosha = 'Vata' | 'Pitta' | 'Kapha';
+const vikritiOptions: { label: string; doshas: VikritiDosha[] }[] = [
+  { label: 'Vata, Pitta and Kapha', doshas: ['Vata', 'Pitta', 'Kapha'] },
+  { label: 'Vata and Pitta', doshas: ['Vata', 'Pitta'] }, { label: 'Vata and Kapha', doshas: ['Vata', 'Kapha'] }, { label: 'Pitta and Kapha', doshas: ['Pitta', 'Kapha'] },
+  { label: 'Vata', doshas: ['Vata'] }, { label: 'Pitta', doshas: ['Pitta'] }, { label: 'Kapha', doshas: ['Kapha'] },
 ];
+function parseVikritiConclusion(content: string) {
+  const match = content.match(/Your\s+(Vata\s*,\s*Pitta\s+and\s+Kapha|Vata\s+and\s+Pitta|Vata\s+and\s+Kapha|Pitta\s+and\s+Kapha|Vata|Pitta|Kapha)\s+doshas?\s+(?:is|are)\s+ima?balanced\b/i);
+  if (!match) return null;
+  const normalized = match[1].replace(/\s*,\s*/g, ', ').replace(/\s+/g, ' ').toLowerCase();
+  const option = vikritiOptions.find(value => value.label.toLowerCase() === normalized);
+  if (!option) return null;
+  return { conclusion: `Your ${option.label} ${option.doshas.length === 1 ? 'dosha is' : 'doshas are'} imbalanced`, doshas: option.doshas };
+}
 const currentHealthOpening = 'Please describe the main symptom, complaint, or health concern you are experiencing right now.';
 
 function CurrentHealthChat({ session, onBack, onComplete }: { session: Session | null; onBack: () => void; onComplete: () => void }) {
@@ -396,12 +405,12 @@ function CurrentHealthChat({ session, onBack, onComplete }: { session: Session |
     let functionMessage = '';
     if (functionError instanceof FunctionsHttpError) { try { const details = await functionError.context.json(); functionMessage = details?.error ?? ''; } catch {} }
     if (functionError || !reply) { setSending(false); setError(functionMessage || data?.error || functionError?.message || 'Could not continue the assessment. Please try again.'); return; }
-    const completed = currentHealthConclusions.includes(reply);
-    const completedConversation: ChatMessage[] = [...conversation, { role: 'assistant', content: reply }];
+    const result = parseVikritiConclusion(reply);
+    const completedConversation: ChatMessage[] = [...conversation, { role: 'assistant', content: result?.conclusion ?? reply }];
     setMessages(completedConversation); setSending(false);
-    if (!completed) return;
+    if (!result) return;
     if (!session?.user.id) { setError('Please sign in again before saving your assessment.'); return; }
-    const { error: saveError } = await supabase.from('current_health_assessments').insert({ user_id: session.user.id, symptoms: [], conclusion: reply, vata_imbalanced: reply.includes('Vata'), pitta_imbalanced: reply.includes('Pitta'), kapha_imbalanced: reply.includes('Kapha'), conversation: completedConversation });
+    const { error: saveError } = await supabase.from('current_health_assessments').insert({ user_id: session.user.id, symptoms: [], conclusion: result.conclusion, vata_imbalanced: result.doshas.includes('Vata'), pitta_imbalanced: result.doshas.includes('Pitta'), kapha_imbalanced: result.doshas.includes('Kapha'), conversation: completedConversation });
     if (saveError) { setError(saveError.message); return; }
     onComplete();
   }
