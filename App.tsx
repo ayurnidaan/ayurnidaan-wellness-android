@@ -325,15 +325,13 @@ function getResultMeaning(dominant: string[]) {
 }
 
 function CurrentHealthAssessment({ onExit }: { onExit: () => void }) {
-  const [started, setStarted] = useState(false);
+  const [stage, setStage] = useState<'intro' | 'question' | 'summary' | 'ready'>('intro');
   const [selected, setSelected] = useState<string[]>([]);
-  const [notice, setNotice] = useState('');
   const symptoms = ['Bloating / Gas', 'Acidity / Heartburn', 'Constipation', 'Fatigue / Tiredness', 'Poor Sleep'];
   function toggleSymptom(symptom: string) {
-    setNotice('');
     setSelected((values) => values.includes(symptom) ? values.filter((value) => value !== symptom) : [...values, symptom]);
   }
-  if (!started) return <SafeAreaView style={styles.assessmentSafe}>
+  if (stage === 'intro') return <SafeAreaView style={styles.assessmentSafe}>
     <StatusBar style="dark" />
     <View style={styles.healthIntroPage}>
       <BackButton onPress={onExit} />
@@ -347,20 +345,66 @@ function CurrentHealthAssessment({ onExit }: { onExit: () => void }) {
           <AssessmentFact icon="▣" text="Medications & conditions" />
         </View>
       </View>
-      <PrimaryButton label="Start Assessment" onPress={() => setStarted(true)} />
+      <PrimaryButton label="Start Assessment" onPress={() => setStage('question')} />
     </View>
   </SafeAreaView>;
+  if (stage === 'summary') return <CurrentHealthSummary symptoms={selected} onContinue={() => setStage('ready')} />;
+  if (stage === 'ready') return <HealthProfileReady onContinue={onExit} />;
   return <SafeAreaView style={styles.assessmentSafe}>
     <StatusBar style="dark" />
     <View style={styles.questionPage}>
-      <BackButton onPress={() => setStarted(false)} /><Text style={styles.assessmentPageTitle}>Current Health Assessment</Text>
+      <BackButton onPress={() => setStage('intro')} /><Text style={styles.assessmentPageTitle}>Current Health Assessment</Text>
       <Text style={styles.questionCount}>Step 1 of 6</Text><View style={styles.progressTrack}><View style={[styles.progressFill, { width: '16.67%' }]} /></View>
       <Text style={styles.healthQuestion}>Do you experience any of the following?</Text><Text style={styles.selectAllHint}>(Select all that apply)</Text>
       <View style={styles.symptomList}>{symptoms.map((symptom) => { const checked = selected.includes(symptom); return <Pressable key={symptom} accessibilityRole="checkbox" accessibilityState={{ checked }} onPress={() => toggleSymptom(symptom)} style={[styles.symptomOption, checked && styles.symptomOptionSelected]}><View style={[styles.symptomCheckbox, checked && styles.symptomCheckboxSelected]}>{checked ? <Text style={styles.symptomCheck}>✓</Text> : null}</View><Text style={styles.symptomLabel}>{symptom}</Text></Pressable>; })}</View>
-      <View style={styles.questionActions}><SecondaryButton label="Back" onPress={() => setStarted(false)} /><View style={styles.continueHalf}><PrimaryButton label="Continue" onPress={() => setNotice('The remaining Current Health questions will be added when their content and scoring rules are provided.')} /></View></View>
-      {notice ? <Text style={styles.notice}>{notice}</Text> : null}
+      <View style={styles.questionActions}><SecondaryButton label="Back" onPress={() => setStage('intro')} /><View style={styles.continueHalf}><PrimaryButton label="Continue" onPress={() => setStage('summary')} /></View></View>
     </View>
   </SafeAreaView>;
+}
+
+function CurrentHealthSummary({ symptoms, onContinue }: { symptoms: string[]; onContinue: () => void }) {
+  const symptomSummary = symptoms.length ? symptoms.map((symptom) => symptom.replace(' / ', ', ')).join(', ') : 'None selected';
+  return <SafeAreaView style={styles.assessmentSafe}>
+    <StatusBar style="dark" />
+    <View style={styles.healthSummaryPage}>
+      <View style={styles.summaryContent}>
+        <Text style={styles.healthSummaryTitle}>Your Current Health{`\n`}Overview</Text>
+        <View style={styles.summaryCard}>
+          <SummaryRow label="Symptoms" value={symptomSummary} />
+          <SummaryRow label="Lifestyle" value="Moderate Activity" />
+          <SummaryRow label="Sleep" value={symptoms.includes('Poor Sleep') ? 'Irregular / Needs attention' : '6–7 hrs / Regular'} />
+          <SummaryRow label="Stress" value="Moderate" last />
+        </View>
+      </View>
+      <PrimaryButton label="Continue" onPress={onContinue} />
+    </View>
+  </SafeAreaView>;
+}
+
+function SummaryRow({ label, value, last = false }: { label: string; value: string; last?: boolean }) {
+  return <View style={[styles.summaryRow, last && styles.summaryRowLast]}><Text style={styles.summaryLabel}>{label}</Text><Text style={styles.summaryValue}>{value}</Text></View>;
+}
+
+function HealthProfileReady({ onContinue }: { onContinue: () => void }) {
+  return <SafeAreaView style={styles.assessmentSafe}>
+    <StatusBar style="dark" />
+    <View style={styles.healthReadyPage}>
+      <View style={styles.healthReadyContent}>
+        <View style={styles.readyIcon}><Text style={styles.readyIconCheck}>✓</Text></View>
+        <Text style={styles.healthSummaryTitle}>Your Personalized{`\n`}Health Profile is Ready!</Text>
+        <Text style={styles.readyCopy}>We have created your health profile using your information.</Text>
+        <View style={styles.readyChecklist}>
+          <ReadyItem label="Basic Profile" /><ReadyItem label="Prakriti Assessment" /><ReadyItem label="Current Health Assessment" />
+        </View>
+        <Text style={styles.readyFooter}>Let's unlock your personalized health experience.</Text>
+      </View>
+      <PrimaryButton label="Go to Home" onPress={onContinue} />
+    </View>
+  </SafeAreaView>;
+}
+
+function ReadyItem({ label }: { label: string }) {
+  return <View style={styles.readyItem}><View style={styles.readyCheck}><Text style={styles.readyCheckText}>✓</Text></View><Text style={styles.readyLabel}>{label}</Text></View>;
 }
 
 function MeditationArt() {
@@ -442,5 +486,6 @@ const styles = StyleSheet.create({
   questionPage: { flex: 1, paddingBottom: 28, paddingHorizontal: 24, paddingTop: 18 }, assessmentPageTitle: { color: '#202921', fontFamily: serif, fontSize: 24, fontWeight: '700' }, questionCount: { color: '#6D756F', fontSize: 13, fontWeight: '600', marginTop: 23 }, progressTrack: { backgroundColor: '#E2E3DB', borderRadius: 4, height: 6, marginTop: 10, overflow: 'hidden' }, progressFill: { backgroundColor: '#075A3F', borderRadius: 4, height: '100%' }, questionPrompt: { color: '#26312B', fontFamily: serif, fontSize: 25, fontWeight: '700', lineHeight: 33, marginBottom: 27, marginTop: 38 }, answerList: { gap: 13 }, answerOption: { alignItems: 'center', backgroundColor: '#FFFEFA', borderColor: '#DEDED4', borderRadius: 12, borderWidth: 1, flexDirection: 'row', justifyContent: 'space-between', minHeight: 66, paddingHorizontal: 15, paddingVertical: 10 }, answerOptionSelected: { backgroundColor: '#F3F8F4', borderColor: '#075A3F', borderWidth: 1.5 }, answerTextWrap: { alignItems: 'center', flex: 1, flexDirection: 'row', gap: 12 }, answerLetter: { color: '#075A3F', fontSize: 14, fontWeight: '800' }, answerLabel: { color: '#38423C', flex: 1, fontSize: 15, fontWeight: '600' }, radio: { alignItems: 'center', borderColor: '#C8CBC5', borderRadius: 10, borderWidth: 1.5, height: 20, justifyContent: 'center', width: 20 }, radioSelected: { borderColor: '#075A3F' }, radioDot: { backgroundColor: '#075A3F', borderRadius: 5, height: 10, width: 10 }, questionActions: { flexDirection: 'row', gap: 12, marginTop: 'auto', paddingTop: 25 }, continueHalf: { flex: 1 }, answerHint: { color: '#8A6D2F', fontSize: 11, marginTop: 9, textAlign: 'right' },
   resultPage: { flexGrow: 1, paddingBottom: 30, paddingHorizontal: 25, paddingTop: 40 }, resultEyebrow: { color: '#B08A3D', fontSize: 11, fontWeight: '800', letterSpacing: 1.5, textAlign: 'center' }, resultTitle: { color: '#075A3F', fontFamily: serif, fontSize: 33, fontWeight: '700', marginTop: 8, textAlign: 'center' }, resultDominant: { color: '#34443C', fontSize: 16, fontWeight: '700', marginTop: 7, textAlign: 'center' }, chartRow: { alignItems: 'center', flexDirection: 'row', justifyContent: 'center', marginVertical: 35 }, doshaChart: { height: 160, position: 'relative', width: 160 }, chartSegment: { borderRadius: 3, height: 18, left: 77.5, position: 'absolute', top: 71, width: 5 }, chartCenter: { alignItems: 'center', backgroundColor: '#FBF8EF', borderColor: '#EEE7D8', borderRadius: 49, borderWidth: 1, height: 98, justifyContent: 'center', left: 31, position: 'absolute', top: 31, width: 98 }, chartCenterLabel: { color: '#59645E', fontSize: 12 }, chartCenterValue: { color: '#24312B', fontFamily: serif, fontSize: 24, fontWeight: '700', marginTop: 2 }, legend: { gap: 14, marginLeft: 26 }, legendItem: { alignItems: 'center', flexDirection: 'row', minWidth: 100 }, legendDot: { borderRadius: 5, height: 10, marginRight: 8, width: 10 }, legendName: { color: '#3E4943', flex: 1, fontSize: 13, fontWeight: '600' }, legendValue: { color: '#252E29', fontSize: 13, fontWeight: '800', marginLeft: 8 }, resultMeaning: { backgroundColor: '#FFFDF7', borderColor: '#E7E0CE', borderRadius: 17, borderWidth: 1, marginBottom: 28, padding: 19 }, resultSectionTitle: { color: '#29352F', fontFamily: serif, fontSize: 17, fontWeight: '700', marginBottom: 8, marginTop: 7 }, resultBody: { color: '#606963', fontSize: 13, lineHeight: 20, marginBottom: 16 }, tendency: { color: '#606963', fontSize: 13, lineHeight: 20, marginBottom: 5 },
   healthIntroPage: { flex: 1, paddingBottom: 28, paddingHorizontal: 24, paddingTop: 18 }, healthIntroContent: { flex: 1, justifyContent: 'center', paddingBottom: 22 }, meditationArt: { alignSelf: 'center', height: 190, marginTop: 25, position: 'relative', width: 250 }, meditationHalo: { backgroundColor: '#EDF2DD', borderRadius: 70, height: 140, left: 55, position: 'absolute', top: 24, width: 140 }, meditationHead: { backgroundColor: '#B87544', borderRadius: 16, height: 31, left: 109, position: 'absolute', top: 28, width: 31 }, meditationBody: { backgroundColor: '#52704B', borderTopLeftRadius: 24, borderTopRightRadius: 24, height: 75, left: 91, position: 'absolute', top: 56, width: 67 }, meditationArms: { backgroundColor: '#B87544', borderRadius: 8, height: 13, left: 57, position: 'absolute', top: 92, transform: [{ rotate: '-4deg' }], width: 137 }, meditationLegs: { backgroundColor: '#465D3F', borderRadius: 30, height: 37, left: 43, position: 'absolute', top: 125, width: 164 }, meditationLeaf: { backgroundColor: '#83A86B', borderBottomLeftRadius: 24, borderTopRightRadius: 24, height: 74, position: 'absolute', top: 82, width: 35 }, meditationLeafLeft: { left: 25, transform: [{ rotate: '-35deg' }] }, meditationLeafRight: { right: 25, transform: [{ rotate: '35deg' }] }, healthQuestion: { color: '#26312B', fontFamily: serif, fontSize: 23, fontWeight: '700', lineHeight: 31, marginTop: 30 }, selectAllHint: { color: '#68716C', fontSize: 12, marginBottom: 18, marginTop: 6 }, symptomList: { gap: 10 }, symptomOption: { alignItems: 'center', backgroundColor: '#FFFEFA', borderColor: '#DEDED4', borderRadius: 10, borderWidth: 1, flexDirection: 'row', minHeight: 49, paddingHorizontal: 13 }, symptomOptionSelected: { backgroundColor: '#F3F8F4', borderColor: '#A9C4B6' }, symptomCheckbox: { alignItems: 'center', borderColor: '#C5C8C2', borderRadius: 4, borderWidth: 1.2, height: 21, justifyContent: 'center', marginRight: 12, width: 21 }, symptomCheckboxSelected: { backgroundColor: '#075A3F', borderColor: '#075A3F' }, symptomCheck: { color: '#FFF', fontSize: 13, fontWeight: '800' }, symptomLabel: { color: '#3E4742', fontSize: 14, fontWeight: '500' },
+  healthSummaryPage: { flex: 1, paddingBottom: 28, paddingHorizontal: 24, paddingTop: 24 }, summaryContent: { flex: 1, justifyContent: 'center', paddingBottom: 45 }, healthSummaryTitle: { color: '#26312B', fontFamily: serif, fontSize: 28, fontWeight: '700', lineHeight: 36, textAlign: 'center' }, summaryCard: { backgroundColor: '#FFFDF7', borderColor: '#E3DED0', borderRadius: 16, borderWidth: 1, marginTop: 34, overflow: 'hidden' }, summaryRow: { borderBottomColor: '#E7E3D9', borderBottomWidth: 1, paddingHorizontal: 18, paddingVertical: 16 }, summaryRowLast: { borderBottomWidth: 0 }, summaryLabel: { color: '#747B76', fontSize: 11, fontWeight: '700', marginBottom: 5, textTransform: 'uppercase' }, summaryValue: { color: '#303A34', fontSize: 14, fontWeight: '600', lineHeight: 20 }, healthReadyPage: { flex: 1, paddingBottom: 28, paddingHorizontal: 24, paddingTop: 24 }, healthReadyContent: { alignItems: 'center', flex: 1, justifyContent: 'center', paddingBottom: 40 }, readyIcon: { alignItems: 'center', backgroundColor: '#E5F2E7', borderRadius: 30, height: 60, justifyContent: 'center', marginBottom: 23, width: 60 }, readyIconCheck: { color: '#3E9A50', fontSize: 30, fontWeight: '800' }, readyCopy: { color: '#68716C', fontSize: 14, lineHeight: 21, marginTop: 16, maxWidth: 275, textAlign: 'center' }, readyChecklist: { alignSelf: 'stretch', gap: 18, marginHorizontal: 28, marginTop: 38 }, readyItem: { alignItems: 'center', flexDirection: 'row', gap: 13 }, readyCheck: { alignItems: 'center', backgroundColor: '#4CA65A', borderRadius: 11, height: 22, justifyContent: 'center', width: 22 }, readyCheckText: { color: '#FFF', fontSize: 13, fontWeight: '800' }, readyLabel: { color: '#35413A', fontSize: 14, fontWeight: '600' }, readyFooter: { color: '#5F6963', fontSize: 13, lineHeight: 20, marginTop: 42, textAlign: 'center' },
   homeSafe: { backgroundColor: '#004735', flex: 1 }, homeScroll: { backgroundColor: '#FBF8EF', flexGrow: 1, paddingBottom: 112 }, homeHeader: { alignItems: 'center', backgroundColor: '#004735', flexDirection: 'row', justifyContent: 'space-between', minHeight: 198, paddingBottom: 60, paddingHorizontal: 25, paddingTop: 29 }, greeting: { color: '#D9E7DF', fontSize: 19, fontWeight: '500', lineHeight: 25 }, greetingName: { color: '#FFF', fontFamily: serif, fontSize: 40, fontWeight: '700', lineHeight: 47, marginTop: 2 }, bell: { alignItems: 'center', borderColor: '#C7DED3', borderRadius: 22, borderWidth: 1.2, height: 44, justifyContent: 'center', width: 44 }, bellIcon: { color: '#FFF', fontSize: 26, transform: [{ rotate: '180deg' }] }, notificationDot: { backgroundColor: '#E5B54D', borderRadius: 4, height: 8, position: 'absolute', right: 4, top: 3, width: 8 }, dashboardBody: { paddingHorizontal: 18 }, assessmentCard: { backgroundColor: '#FFFDF7', borderColor: '#E7E0CE', borderRadius: 21, borderWidth: 1, elevation: 4, gap: 22, marginTop: -44, padding: 23, shadowColor: '#17352E', shadowOffset: { width: 0, height: 7 }, shadowOpacity: .1, shadowRadius: 14 }, assessmentTitle: { color: '#28332D', fontFamily: serif, fontSize: 21, fontWeight: '700', lineHeight: 29 }, assessmentItem: { alignItems: 'flex-start', flexDirection: 'row', gap: 15 }, numberBadge: { alignItems: 'center', backgroundColor: '#075A3F', borderRadius: 16, height: 32, justifyContent: 'center', marginTop: 2, width: 32 }, completedBadge: { backgroundColor: '#3E8A52' }, numberText: { color: '#FFF', fontSize: 15, fontWeight: '800' }, assessmentText: { flex: 1 }, assessmentItemTitle: { color: '#303A34', fontSize: 16, fontWeight: '700' }, assessmentCopy: { color: '#737B75', fontSize: 14, lineHeight: 20, marginTop: 4 }, startButton: { alignItems: 'center', backgroundColor: '#075A3F', borderRadius: 11, justifyContent: 'center', minHeight: 51 }, startButtonText: { color: '#FFF', fontSize: 15, fontWeight: '700', textAlign: 'center' }, exploreTitle: { color: '#28332D', fontFamily: serif, fontSize: 22, fontWeight: '700', marginBottom: 17, marginTop: 29 }, featureGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 }, featureTile: { alignItems: 'center', backgroundColor: '#FFF6E6', borderColor: '#F3E7D1', borderRadius: 16, borderWidth: 1, height: 108, justifyContent: 'center', width: '30.5%' }, featureIcon: { fontSize: 31 }, featureLabel: { color: '#3D4640', fontSize: 12, fontWeight: '700', marginTop: 10, textAlign: 'center' }, bottomNav: { alignItems: 'center', backgroundColor: '#FFF', borderColor: '#E8E3D8', borderTopWidth: 1, bottom: 0, flexDirection: 'row', height: 86, justifyContent: 'space-around', left: 0, paddingBottom: 8, position: 'absolute', right: 0 }, navItem: { alignItems: 'center', flex: 1, justifyContent: 'center' }, navIcon: { color: '#818A84', fontSize: 27, fontWeight: '700' }, navLabel: { color: '#818A84', fontSize: 11, marginTop: 4 }, navActive: { color: '#075A3F', fontWeight: '800' }, navIndicator: { backgroundColor: '#075A3F', borderRadius: 2, height: 3, marginTop: 5, width: 20 },
 });
