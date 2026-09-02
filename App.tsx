@@ -14,9 +14,31 @@ type AssessmentAnswer = 'A' | 'B' | 'C';
 type AssessmentQuestion = { prompt: string; options: Record<AssessmentAnswer, string> };
 const logo = require('./assets/ayurnidaan-logo.png');
 const assessmentQuestions: AssessmentQuestion[] = [
-  { prompt: 'How would you describe your natural body frame?', options: { A: 'Light and slender', B: 'Medium and athletic', C: 'Broad and sturdy' } },
-  { prompt: 'What is your skin naturally like?', options: { A: 'Dry and cool', B: 'Warm or sensitive', C: 'Smooth or oily' } },
-  { prompt: 'What best describes your usual pace?', options: { A: 'Quick and changeable', B: 'Focused and intense', C: 'Calm and steady' } },
+  { prompt: 'Which description best matches your lifelong body frame?', options: { A: 'Slender, light, with prominent joints', B: 'Proportionate and medium-built', C: 'Broad, solid, or naturally muscular' } },
+  { prompt: 'How does your skin tend to feel naturally?', options: { A: 'Thin, dry, or rough', B: 'Warm, soft, and easily irritated', C: 'Cool, smooth, thick, or oily' } },
+  { prompt: 'What pattern best describes your usual hunger?', options: { A: 'Unpredictable and variable', B: 'Strong; delays make me irritable', C: 'Gradual and steady; missing a meal is easy' } },
+  { prompt: 'Which type of weather feels most uncomfortable?', options: { A: 'Windy, cold, and dry', B: 'Hot or humid', C: 'Chilly and damp' } },
+  { prompt: 'How would you describe your normal perspiration?', options: { A: 'Minimal', B: 'Heavy and sometimes strong-smelling', C: 'Moderate and consistent' } },
+  { prompt: 'Which description fits your natural hair?', options: { A: 'Fine, dry, frizzy, or fragile', B: 'Soft and fine, with early greying', C: 'Dense, thick, wavy, or oily' } },
+  { prompt: 'What are your eyes generally like?', options: { A: 'Small, dry, or frequently moving', B: 'Medium, penetrating, and light-sensitive', C: 'Large, moist, and composed' } },
+  { prompt: 'How does your energy usually last?', options: { A: 'Comes in bursts and fades quickly', B: 'Moderate, directed, and purposeful', C: 'Builds slowly but endures for a long time' } },
+  { prompt: 'How does your body generally respond to illness?', options: { A: 'Recovery varies and minor ailments recur', B: 'Responds quickly, often with heat or inflammation', C: 'Falls ill slowly and is usually resilient' } },
+  { prompt: 'Which statement best describes your usual sleep?', options: { A: 'Light and easily interrupted', B: 'Restful but relatively brief', C: 'Long, deep, and difficult to wake from' } },
+  { prompt: 'How do learning and memory typically work for you?', options: { A: 'I grasp things fast but may forget soon', B: 'I retain facts with clarity and logic', C: 'I learn gradually and remember for years' } },
+  { prompt: 'What is your normal decision-making style?', options: { A: 'Quick to choose, but likely to reconsider', B: 'Fast, definite, and confident', C: 'Deliberate, then firmly committed' } },
+  { prompt: 'What is your instinctive response to pressure?', options: { A: 'Restlessness, worry, or nervousness', B: 'Impatience, irritation, or intensity', C: 'Calmness and emotional steadiness' } },
+  { prompt: 'How would you characterize your natural speech?', options: { A: 'Rapid, expressive, and changeable', B: 'Precise, direct, and assertive', C: 'Measured, deep, and gentle' } },
+  { prompt: 'Which description best fits your bones and joints?', options: { A: 'Fine bones and clearly visible joints', B: 'Moderate bone structure', C: 'Large, dense, and strong structure' } },
+  { prompt: 'Which description is closest to your natural complexion?', options: { A: 'Brown or dusky', B: 'Warm with reddish, copper, or yellow tones', C: 'Pale, fair, and even-toned' } },
+  { prompt: 'What are your nails usually like?', options: { A: 'Brittle, coarse, or dry', B: 'Pink, flexible, and fast-growing', C: 'Strong, glossy, thick, and slow-growing' } },
+  { prompt: 'Which description fits your teeth and gums?', options: { A: 'Irregular or spaced teeth', B: 'Medium teeth with sensitive or bleeding gums', C: 'Large, sturdy teeth and firm gums' } },
+  { prompt: 'What is your characteristic walking style?', options: { A: 'Light, rapid, and occasionally uneven', B: 'Purposeful, brisk, and assured', C: 'Unhurried, stable, and grounded' } },
+  { prompt: 'How does your weight usually behave?', options: { A: 'Gaining weight is difficult', B: 'It remains fairly stable', C: 'It rises easily and falls slowly' } },
+  { prompt: 'Which description sounds most like you in childhood?', options: { A: 'Lean, active, and a light eater', B: 'Medium-built, hungry, and competitive', C: 'Strong-built, relaxed, with a healthy appetite' } },
+  { prompt: 'Which pattern is most common in your family?', options: { A: 'Lean frames, quick temperaments, shifting moods', B: 'Driven personalities and early greying', C: 'Solid frames, calm temperaments, easy weight gain' } },
+  { prompt: 'What is your typical bowel pattern?', options: { A: 'Dry, hard, irregular, or prone to constipation', B: 'Loose, soft, or relatively frequent', C: 'Regular and well-formed' } },
+  { prompt: 'How would you describe your natural thirst?', options: { A: 'It varies from day to day', B: 'Strong and frequent', C: 'Low; I can comfortably wait for water' } },
+  { prompt: 'Which flavor group do you naturally enjoy most?', options: { A: 'Sweet, sour, and salty', B: 'Sweet and bitter, with fewer hot or sour foods', C: 'Pungent, bitter, and drying flavors' } },
 ];
 
 export default function App() {
@@ -254,7 +276,7 @@ function AssessmentIntro({ onBack, onStart }: { onBack: () => void; onStart: () 
         <Text style={styles.assessmentIntroTitle}>Understand Your{`\n`}Natural Health Pattern</Text>
         <Text style={styles.assessmentIntroCopy}>Prakriti is your unique mind-body constitution. It helps us personalize your health, diet, yoga and lifestyle.</Text>
         <View style={styles.assessmentFacts}>
-          <AssessmentFact icon="▣" text="25 Questions" detail="3-question preview in this build" />
+          <AssessmentFact icon="▣" text="25 Questions" />
           <AssessmentFact icon="◷" text="Takes a few minutes" />
           <AssessmentFact icon="⌁" text="Answers based on your natural tendencies" />
         </View>
