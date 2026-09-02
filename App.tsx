@@ -8,8 +8,16 @@ import { supabase } from './src/lib/supabase';
 import { colors } from './src/theme';
 
 WebBrowser.maybeCompleteAuthSession();
-type Screen = 'splash' | 'intro' | 'auth' | 'account' | 'profile' | 'confirmation' | 'home';
+type Screen = 'splash' | 'intro' | 'auth' | 'account' | 'profile' | 'confirmation' | 'home' | 'prakriti';
+type Dosha = 'vata' | 'pitta' | 'kapha';
+type AssessmentAnswer = 'A' | 'B' | 'C';
+type AssessmentQuestion = { prompt: string; options: Record<AssessmentAnswer, string> };
 const logo = require('./assets/ayurnidaan-logo.png');
+const assessmentQuestions: AssessmentQuestion[] = [
+  { prompt: 'How would you describe your natural body frame?', options: { A: 'Light and slender', B: 'Medium and athletic', C: 'Broad and sturdy' } },
+  { prompt: 'What is your skin naturally like?', options: { A: 'Dry and cool', B: 'Warm or sensitive', C: 'Smooth or oily' } },
+  { prompt: 'What best describes your usual pace?', options: { A: 'Quick and changeable', B: 'Focused and intense', C: 'Calm and steady' } },
+];
 
 export default function App() {
   const [screen, setScreen] = useState<Screen>('splash');
@@ -31,7 +39,8 @@ export default function App() {
   if (screen === 'account') return <AccountScreen session={session} onComplete={() => setScreen('profile')} />;
   if (screen === 'profile') return <ProfileScreen session={session} onComplete={() => setScreen('confirmation')} />;
   if (screen === 'confirmation') return <ConfirmationScreen session={session} onContinue={() => setScreen('home')} />;
-  return <HomeScreen session={session} />;
+  if (screen === 'prakriti') return <PrakritiAssessment onExit={() => setScreen('home')} />;
+  return <HomeScreen session={session} onStartAssessment={() => setScreen('prakriti')} />;
 }
 
 function BrandSplash({ onFinish }: { onFinish: () => void }) {
@@ -169,7 +178,129 @@ function ConfirmationScreen({ session, onContinue }: { session: Session | null; 
   </ScreenFrame>;
 }
 
-function HomeScreen({ session }: { session: Session | null }) {
+function PrakritiAssessment({ onExit }: { onExit: () => void }) {
+  const [stage, setStage] = useState<'intro' | 'questions' | 'result'>('intro');
+  const [questionIndex, setQuestionIndex] = useState(0);
+  const [answers, setAnswers] = useState<(AssessmentAnswer | null)[]>(assessmentQuestions.map(() => null));
+  const currentAnswer = answers[questionIndex];
+
+  function chooseAnswer(answer: AssessmentAnswer) {
+    setAnswers((values) => values.map((value, index) => index === questionIndex ? answer : value));
+  }
+  function continueQuestion() {
+    if (!currentAnswer) return;
+    if (questionIndex === assessmentQuestions.length - 1) setStage('result');
+    else setQuestionIndex((value) => value + 1);
+  }
+  function goBack() {
+    if (questionIndex === 0) setStage('intro');
+    else setQuestionIndex((value) => value - 1);
+  }
+
+  if (stage === 'intro') return <AssessmentIntro onBack={onExit} onStart={() => setStage('questions')} />;
+  if (stage === 'result') return <AssessmentResult answers={answers} onContinue={onExit} />;
+  const question = assessmentQuestions[questionIndex];
+  const progress = ((questionIndex + 1) / assessmentQuestions.length) * 100;
+  return <SafeAreaView style={styles.assessmentSafe}>
+    <StatusBar style="dark" />
+    <View style={styles.questionPage}>
+      <BackButton onPress={goBack} />
+      <Text style={styles.assessmentPageTitle}>Prakriti Assessment</Text>
+      <Text style={styles.questionCount}>Question {questionIndex + 1} of {assessmentQuestions.length}</Text>
+      <View style={styles.progressTrack}><View style={[styles.progressFill, { width: `${progress}%` }]} /></View>
+      <Text style={styles.questionPrompt}>{question.prompt}</Text>
+      <View style={styles.answerList}>
+        {(Object.entries(question.options) as [AssessmentAnswer, string][]).map(([key, label]) => {
+          const selected = currentAnswer === key;
+          return <Pressable key={key} accessibilityRole="radio" accessibilityState={{ selected }} onPress={() => chooseAnswer(key)} style={[styles.answerOption, selected && styles.answerOptionSelected]}>
+            <View style={styles.answerTextWrap}><Text style={styles.answerLetter}>{key}</Text><Text style={styles.answerLabel}>{label}</Text></View>
+            <View style={[styles.radio, selected && styles.radioSelected]}>{selected ? <View style={styles.radioDot} /> : null}</View>
+          </Pressable>;
+        })}
+      </View>
+      <View style={styles.questionActions}>
+        <SecondaryButton label="Back" onPress={goBack} />
+        <View style={styles.continueHalf}><PrimaryButton label={questionIndex === assessmentQuestions.length - 1 ? 'See Results' : 'Continue'} onPress={continueQuestion} /></View>
+      </View>
+      {!currentAnswer ? <Text style={styles.answerHint}>Select one option to continue</Text> : null}
+    </View>
+  </SafeAreaView>;
+}
+
+function AssessmentIntro({ onBack, onStart }: { onBack: () => void; onStart: () => void }) {
+  return <SafeAreaView style={styles.assessmentSafe}>
+    <StatusBar style="dark" />
+    <View style={styles.assessmentIntroPage}>
+      <BackButton onPress={onBack} />
+      <View style={styles.assessmentIntroContent}>
+        <View style={styles.assessmentEmblem}><Text style={styles.assessmentEmblemText}>❧</Text></View>
+        <Text style={styles.assessmentIntroTitle}>Understand Your{`\n`}Natural Health Pattern</Text>
+        <Text style={styles.assessmentIntroCopy}>Prakriti is your unique mind-body constitution. It helps us personalize your health, diet, yoga and lifestyle.</Text>
+        <View style={styles.assessmentFacts}>
+          <AssessmentFact icon="▣" text="25 Questions" detail="3-question preview in this build" />
+          <AssessmentFact icon="◷" text="Takes a few minutes" />
+          <AssessmentFact icon="⌁" text="Answers based on your natural tendencies" />
+        </View>
+      </View>
+      <PrimaryButton label="Start Assessment" onPress={onStart} />
+    </View>
+  </SafeAreaView>;
+}
+
+function AssessmentFact({ icon, text, detail }: { icon: string; text: string; detail?: string }) {
+  return <View style={styles.assessmentFact}><View style={styles.factIcon}><Text style={styles.factIconText}>{icon}</Text></View><View style={styles.factTextWrap}><Text style={styles.factText}>{text}</Text>{detail ? <Text style={styles.factDetail}>{detail}</Text> : null}</View></View>;
+}
+
+function AssessmentResult({ answers, onContinue }: { answers: (AssessmentAnswer | null)[]; onContinue: () => void }) {
+  const percentages = calculateDoshaPercentages(answers);
+  const entries: { key: Dosha; label: string; color: string; value: number }[] = [
+    { key: 'vata', label: 'Vata', color: '#2879B9', value: percentages.vata },
+    { key: 'pitta', label: 'Pitta', color: '#EEA62A', value: percentages.pitta },
+    { key: 'kapha', label: 'Kapha', color: '#5B9B54', value: percentages.kapha },
+  ];
+  const maxValue = Math.max(...entries.map((entry) => entry.value));
+  const dominant = entries.filter((entry) => entry.value === maxValue).map((entry) => entry.label);
+  const dominantLabel = `${dominant.join(' – ')} Dominant`;
+  return <SafeAreaView style={styles.assessmentSafe}>
+    <StatusBar style="dark" />
+    <ScrollView contentContainerStyle={styles.resultPage}>
+      <Text style={styles.resultEyebrow}>YOUR RESULT</Text><Text style={styles.resultTitle}>Your Prakriti</Text><Text style={styles.resultDominant}>{dominantLabel}</Text>
+      <View style={styles.chartRow}>
+        <View style={styles.doshaChart}>
+          {entries.map((entry) => <View key={entry.key} style={[styles.chartBand, { backgroundColor: entry.color, flex: Math.max(entry.value, 1) }]} />)}
+          <View style={styles.chartCenter}><Text style={styles.chartCenterLabel}>{dominant[0]}</Text><Text style={styles.chartCenterValue}>{maxValue}%</Text></View>
+        </View>
+        <View style={styles.legend}>{entries.map((entry) => <View key={entry.key} style={styles.legendItem}><View style={[styles.legendDot, { backgroundColor: entry.color }]} /><Text style={styles.legendName}>{entry.label}</Text><Text style={styles.legendValue}>{entry.value}%</Text></View>)}</View>
+      </View>
+      <View style={styles.resultMeaning}><Text style={styles.resultSectionTitle}>What this means</Text><Text style={styles.resultBody}>{getResultMeaning(dominant)}</Text><Text style={styles.resultSectionTitle}>Your natural tendencies</Text><Text style={styles.tendency}>• Your strongest qualities reflect your dominant dosha balance</Text><Text style={styles.tendency}>• Personalized recommendations will build on this foundation</Text></View>
+      <PrimaryButton label="Continue to Home" onPress={onContinue} />
+    </ScrollView>
+  </SafeAreaView>;
+}
+
+function calculateDoshaPercentages(answers: (AssessmentAnswer | null)[]): Record<Dosha, number> {
+  const completed = answers.filter((answer): answer is AssessmentAnswer => answer !== null);
+  const counts = { A: 0, B: 0, C: 0 };
+  completed.forEach((answer) => counts[answer]++);
+  if (!completed.length) return { vata: 0, pitta: 0, kapha: 0 };
+  const raw = [counts.A, counts.B, counts.C].map((count) => count * 100 / completed.length);
+  const rounded = raw.map(Math.floor);
+  let remainder = 100 - rounded.reduce((sum, value) => sum + value, 0);
+  raw.map((value, index) => ({ index, fraction: value - rounded[index] })).sort((a, b) => b.fraction - a.fraction).forEach(({ index }) => { if (remainder > 0) { rounded[index]++; remainder--; } });
+  return { vata: rounded[0], pitta: rounded[1], kapha: rounded[2] };
+}
+
+function getResultMeaning(dominant: string[]) {
+  if (dominant.length > 1) return `You show a balanced combination of ${dominant.join(' and ')} qualities. Your wellbeing benefits from supporting both influences.`;
+  const meanings: Record<string, string> = {
+    Vata: 'Your constitution reflects movement, creativity and adaptability. Steady routines and grounding habits may help you thrive.',
+    Pitta: 'Your constitution reflects focus, drive and transformation. Cooling, calming habits may help maintain balance.',
+    Kapha: 'Your constitution reflects stability, strength and calm. Energizing variety and regular movement may help you thrive.',
+  };
+  return meanings[dominant[0]];
+}
+
+function HomeScreen({ session, onStartAssessment }: { session: Session | null; onStartAssessment: () => void }) {
   const fullName = session?.user.user_metadata.full_name?.trim();
   const firstName = fullName?.split(/\s+/)[0] || 'there';
   const features = [
@@ -189,7 +320,7 @@ function HomeScreen({ session }: { session: Session | null }) {
           <Text style={styles.assessmentTitle}>Complete Your Assessments{`\n`}for Personalized Guidance</Text>
           <AssessmentItem number="1" title="Prakriti Assessment" copy="Understand your natural constitution" />
           <AssessmentItem number="2" title="Current Health Assessment" copy="Tell us how you feel right now" />
-          <Pressable onPress={() => {}} style={({ pressed }) => [styles.startButton, pressed && styles.pressed]}><Text style={styles.startButtonText}>Start Now</Text></Pressable>
+          <Pressable onPress={onStartAssessment} style={({ pressed }) => [styles.startButton, pressed && styles.pressed]}><Text style={styles.startButtonText}>Start Now</Text></Pressable>
         </View>
         <Text style={styles.exploreTitle}>Explore Ayurnidaan</Text>
         <View style={styles.featureGrid}>{features.map((feature) => <FeatureTile key={feature.label} {...feature} />)}</View>
@@ -232,5 +363,8 @@ const styles = StyleSheet.create({
   checkRow: { alignItems: 'flex-start', flexDirection: 'row', gap: 11, marginTop: 3 }, checkbox: { alignItems: 'center', borderColor: '#B9BDB5', borderRadius: 5, borderWidth: 1.3, height: 22, justifyContent: 'center', marginTop: 1, width: 22 }, checkboxSelected: { backgroundColor: '#005A3F', borderColor: '#005A3F' }, checkmark: { color: '#FFF', fontSize: 14, fontWeight: '800' }, terms: { color: '#6D756F', flex: 1, fontSize: 12, lineHeight: 19 },
   choiceRow: { flexDirection: 'row', gap: 8 }, choice: { alignItems: 'center', backgroundColor: '#FFFEFA', borderColor: '#DDDCCF', borderRadius: 10, borderWidth: 1, flex: 1, justifyContent: 'center', minHeight: 47 }, choiceSelected: { backgroundColor: '#075A43', borderColor: '#075A43' }, choiceText: { color: '#4A514C', fontSize: 14, fontWeight: '600' }, choiceTextSelected: { color: '#FFF' }, measureRow: { flexDirection: 'row', gap: 12 }, measureField: { flex: 1 }, privacy: { color: '#85877F', fontSize: 11, lineHeight: 17, textAlign: 'center' },
   confirmationContent: { alignItems: 'center', flex: 1, justifyContent: 'center', paddingBottom: 80 }, successCircle: { alignItems: 'center', backgroundColor: '#075A3F', borderRadius: 38, elevation: 3, height: 76, justifyContent: 'center', marginBottom: 28, shadowColor: '#003C2E', shadowOffset: { width: 0, height: 6 }, shadowOpacity: .2, shadowRadius: 12, width: 76 }, successCheck: { color: '#FFF', fontSize: 40, fontWeight: '700', lineHeight: 46 }, confirmationTitle: { color: '#202921', fontFamily: serif, fontSize: 24, fontWeight: '700', textAlign: 'center' }, confirmationCopy: { color: '#5F6861', fontSize: 14, lineHeight: 21, marginTop: 13, maxWidth: 280, textAlign: 'center' }, confirmationAction: { bottom: 30, left: 26, position: 'absolute', right: 26 },
+  assessmentSafe: { backgroundColor: '#FBF8EF', flex: 1 }, assessmentIntroPage: { flex: 1, paddingBottom: 28, paddingHorizontal: 24, paddingTop: 18 }, assessmentIntroContent: { flex: 1, justifyContent: 'center', paddingBottom: 35 }, assessmentEmblem: { alignItems: 'center', alignSelf: 'center', backgroundColor: '#E9F0E7', borderRadius: 34, height: 68, justifyContent: 'center', marginBottom: 24, width: 68 }, assessmentEmblemText: { color: '#075A3F', fontSize: 36 }, assessmentIntroTitle: { color: '#202921', fontFamily: serif, fontSize: 29, fontWeight: '700', lineHeight: 37, textAlign: 'center' }, assessmentIntroCopy: { color: '#606963', fontSize: 14, lineHeight: 22, marginTop: 18, textAlign: 'center' }, assessmentFacts: { gap: 19, marginTop: 38 }, assessmentFact: { alignItems: 'center', flexDirection: 'row', gap: 13 }, factIcon: { alignItems: 'center', borderColor: '#7A9589', borderRadius: 14, borderWidth: 1, height: 28, justifyContent: 'center', width: 28 }, factIconText: { color: '#075A3F', fontSize: 14, fontWeight: '700' }, factTextWrap: { flex: 1 }, factText: { color: '#303A34', fontSize: 14, fontWeight: '600' }, factDetail: { color: '#8A8F8B', fontSize: 11, marginTop: 2 },
+  questionPage: { flex: 1, paddingBottom: 28, paddingHorizontal: 24, paddingTop: 18 }, assessmentPageTitle: { color: '#202921', fontFamily: serif, fontSize: 24, fontWeight: '700' }, questionCount: { color: '#6D756F', fontSize: 13, fontWeight: '600', marginTop: 23 }, progressTrack: { backgroundColor: '#E2E3DB', borderRadius: 4, height: 6, marginTop: 10, overflow: 'hidden' }, progressFill: { backgroundColor: '#075A3F', borderRadius: 4, height: '100%' }, questionPrompt: { color: '#26312B', fontFamily: serif, fontSize: 25, fontWeight: '700', lineHeight: 33, marginBottom: 27, marginTop: 38 }, answerList: { gap: 13 }, answerOption: { alignItems: 'center', backgroundColor: '#FFFEFA', borderColor: '#DEDED4', borderRadius: 12, borderWidth: 1, flexDirection: 'row', justifyContent: 'space-between', minHeight: 66, paddingHorizontal: 15, paddingVertical: 10 }, answerOptionSelected: { backgroundColor: '#F3F8F4', borderColor: '#075A3F', borderWidth: 1.5 }, answerTextWrap: { alignItems: 'center', flex: 1, flexDirection: 'row', gap: 12 }, answerLetter: { color: '#075A3F', fontSize: 14, fontWeight: '800' }, answerLabel: { color: '#38423C', flex: 1, fontSize: 15, fontWeight: '600' }, radio: { alignItems: 'center', borderColor: '#C8CBC5', borderRadius: 10, borderWidth: 1.5, height: 20, justifyContent: 'center', width: 20 }, radioSelected: { borderColor: '#075A3F' }, radioDot: { backgroundColor: '#075A3F', borderRadius: 5, height: 10, width: 10 }, questionActions: { flexDirection: 'row', gap: 12, marginTop: 'auto', paddingTop: 25 }, continueHalf: { flex: 1 }, answerHint: { color: '#8A6D2F', fontSize: 11, marginTop: 9, textAlign: 'right' },
+  resultPage: { flexGrow: 1, paddingBottom: 30, paddingHorizontal: 25, paddingTop: 40 }, resultEyebrow: { color: '#B08A3D', fontSize: 11, fontWeight: '800', letterSpacing: 1.5, textAlign: 'center' }, resultTitle: { color: '#075A3F', fontFamily: serif, fontSize: 33, fontWeight: '700', marginTop: 8, textAlign: 'center' }, resultDominant: { color: '#34443C', fontSize: 16, fontWeight: '700', marginTop: 7, textAlign: 'center' }, chartRow: { alignItems: 'center', flexDirection: 'row', justifyContent: 'center', marginVertical: 35 }, doshaChart: { borderRadius: 80, height: 160, overflow: 'hidden', position: 'relative', width: 160 }, chartBand: { width: '100%' }, chartCenter: { alignItems: 'center', backgroundColor: '#FBF8EF', borderRadius: 49, height: 98, justifyContent: 'center', left: 31, position: 'absolute', top: 31, width: 98 }, chartCenterLabel: { color: '#59645E', fontSize: 12 }, chartCenterValue: { color: '#24312B', fontFamily: serif, fontSize: 24, fontWeight: '700', marginTop: 2 }, legend: { gap: 14, marginLeft: 26 }, legendItem: { alignItems: 'center', flexDirection: 'row', minWidth: 100 }, legendDot: { borderRadius: 5, height: 10, marginRight: 8, width: 10 }, legendName: { color: '#3E4943', flex: 1, fontSize: 13, fontWeight: '600' }, legendValue: { color: '#252E29', fontSize: 13, fontWeight: '800', marginLeft: 8 }, resultMeaning: { backgroundColor: '#FFFDF7', borderColor: '#E7E0CE', borderRadius: 17, borderWidth: 1, marginBottom: 28, padding: 19 }, resultSectionTitle: { color: '#29352F', fontFamily: serif, fontSize: 17, fontWeight: '700', marginBottom: 8, marginTop: 7 }, resultBody: { color: '#606963', fontSize: 13, lineHeight: 20, marginBottom: 16 }, tendency: { color: '#606963', fontSize: 13, lineHeight: 20, marginBottom: 5 },
   homeSafe: { backgroundColor: '#004735', flex: 1 }, homeScroll: { backgroundColor: '#FBF8EF', flexGrow: 1, paddingBottom: 112 }, homeHeader: { alignItems: 'center', backgroundColor: '#004735', flexDirection: 'row', justifyContent: 'space-between', minHeight: 198, paddingBottom: 60, paddingHorizontal: 25, paddingTop: 29 }, greeting: { color: '#D9E7DF', fontSize: 19, fontWeight: '500', lineHeight: 25 }, greetingName: { color: '#FFF', fontFamily: serif, fontSize: 40, fontWeight: '700', lineHeight: 47, marginTop: 2 }, bell: { alignItems: 'center', borderColor: '#C7DED3', borderRadius: 22, borderWidth: 1.2, height: 44, justifyContent: 'center', width: 44 }, bellIcon: { color: '#FFF', fontSize: 26, transform: [{ rotate: '180deg' }] }, notificationDot: { backgroundColor: '#E5B54D', borderRadius: 4, height: 8, position: 'absolute', right: 4, top: 3, width: 8 }, dashboardBody: { paddingHorizontal: 18 }, assessmentCard: { backgroundColor: '#FFFDF7', borderColor: '#E7E0CE', borderRadius: 21, borderWidth: 1, elevation: 4, gap: 22, marginTop: -44, padding: 23, shadowColor: '#17352E', shadowOffset: { width: 0, height: 7 }, shadowOpacity: .1, shadowRadius: 14 }, assessmentTitle: { color: '#28332D', fontFamily: serif, fontSize: 21, fontWeight: '700', lineHeight: 29 }, assessmentItem: { alignItems: 'flex-start', flexDirection: 'row', gap: 15 }, numberBadge: { alignItems: 'center', backgroundColor: '#075A3F', borderRadius: 16, height: 32, justifyContent: 'center', marginTop: 2, width: 32 }, numberText: { color: '#FFF', fontSize: 15, fontWeight: '800' }, assessmentText: { flex: 1 }, assessmentItemTitle: { color: '#303A34', fontSize: 16, fontWeight: '700' }, assessmentCopy: { color: '#737B75', fontSize: 14, lineHeight: 20, marginTop: 4 }, startButton: { alignItems: 'center', backgroundColor: '#075A3F', borderRadius: 11, justifyContent: 'center', minHeight: 51 }, startButtonText: { color: '#FFF', fontSize: 16, fontWeight: '700' }, exploreTitle: { color: '#28332D', fontFamily: serif, fontSize: 22, fontWeight: '700', marginBottom: 17, marginTop: 29 }, featureGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 }, featureTile: { alignItems: 'center', backgroundColor: '#FFF6E6', borderColor: '#F3E7D1', borderRadius: 16, borderWidth: 1, height: 108, justifyContent: 'center', width: '30.5%' }, featureIcon: { fontSize: 31 }, featureLabel: { color: '#3D4640', fontSize: 12, fontWeight: '700', marginTop: 10, textAlign: 'center' }, bottomNav: { alignItems: 'center', backgroundColor: '#FFF', borderColor: '#E8E3D8', borderTopWidth: 1, bottom: 0, flexDirection: 'row', height: 86, justifyContent: 'space-around', left: 0, paddingBottom: 8, position: 'absolute', right: 0 }, navItem: { alignItems: 'center', flex: 1, justifyContent: 'center' }, navIcon: { color: '#818A84', fontSize: 27, fontWeight: '700' }, navLabel: { color: '#818A84', fontSize: 11, marginTop: 4 }, navActive: { color: '#075A3F', fontWeight: '800' }, navIndicator: { backgroundColor: '#075A3F', borderRadius: 2, height: 3, marginTop: 5, width: 20 },
 });
