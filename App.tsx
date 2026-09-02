@@ -40,7 +40,7 @@ export default function App() {
   if (screen === 'profile') return <ProfileScreen session={session} onComplete={() => setScreen('confirmation')} />;
   if (screen === 'confirmation') return <ConfirmationScreen session={session} onContinue={() => setScreen('home')} />;
   if (screen === 'prakriti') return <PrakritiAssessment session={session} onExit={() => setScreen('home')} />;
-  if (screen === 'currentHealth') return <CurrentHealthAssessment onExit={() => setScreen('home')} />;
+  if (screen === 'currentHealth') return <CurrentHealthAssessment session={session} onExit={() => setScreen('home')} />;
   return <HomeScreen session={session} onStartPrakriti={() => setScreen('prakriti')} onStartCurrentHealth={() => setScreen('currentHealth')} />;
 }
 
@@ -324,12 +324,30 @@ function getResultMeaning(dominant: string[]) {
   return meanings[dominant[0]];
 }
 
-function CurrentHealthAssessment({ onExit }: { onExit: () => void }) {
+function CurrentHealthAssessment({ session, onExit }: { session: Session | null; onExit: () => void }) {
   const [stage, setStage] = useState<'intro' | 'question' | 'summary' | 'ready'>('intro');
   const [selected, setSelected] = useState<string[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
   const symptoms = ['Bloating / Gas', 'Acidity / Heartburn', 'Constipation', 'Fatigue / Tiredness', 'Poor Sleep'];
   function toggleSymptom(symptom: string) {
+    setSaveError('');
     setSelected((values) => values.includes(symptom) ? values.filter((value) => value !== symptom) : [...values, symptom]);
+  }
+  async function completeCurrentHealth() {
+    if (!session?.user.id) return setSaveError('Please sign in again before saving your assessment.');
+    setSaving(true); setSaveError('');
+    const sleepSummary = selected.includes('Poor Sleep') ? 'Irregular / Needs attention' : '6–7 hrs / Regular';
+    const { error } = await supabase.from('current_health_assessments').insert({
+      user_id: session.user.id,
+      symptoms: selected,
+      lifestyle_summary: 'Moderate Activity',
+      sleep_summary: sleepSummary,
+      stress_summary: 'Moderate',
+    });
+    setSaving(false);
+    if (error) return setSaveError(error.message);
+    setStage('summary');
   }
   if (stage === 'intro') return <SafeAreaView style={styles.assessmentSafe}>
     <StatusBar style="dark" />
@@ -357,7 +375,8 @@ function CurrentHealthAssessment({ onExit }: { onExit: () => void }) {
       <Text style={styles.questionCount}>Step 1 of 6</Text><View style={styles.progressTrack}><View style={[styles.progressFill, { width: '16.67%' }]} /></View>
       <Text style={styles.healthQuestion}>Do you experience any of the following?</Text><Text style={styles.selectAllHint}>(Select all that apply)</Text>
       <View style={styles.symptomList}>{symptoms.map((symptom) => { const checked = selected.includes(symptom); return <Pressable key={symptom} accessibilityRole="checkbox" accessibilityState={{ checked }} onPress={() => toggleSymptom(symptom)} style={[styles.symptomOption, checked && styles.symptomOptionSelected]}><View style={[styles.symptomCheckbox, checked && styles.symptomCheckboxSelected]}>{checked ? <Text style={styles.symptomCheck}>✓</Text> : null}</View><Text style={styles.symptomLabel}>{symptom}</Text></Pressable>; })}</View>
-      <View style={styles.questionActions}><SecondaryButton label="Back" onPress={() => setStage('intro')} /><View style={styles.continueHalf}><PrimaryButton label="Continue" onPress={() => setStage('summary')} /></View></View>
+      <View style={styles.questionActions}><SecondaryButton label="Back" onPress={() => setStage('intro')} /><View style={styles.continueHalf}><PrimaryButton label="Continue" loading={saving} onPress={completeCurrentHealth} /></View></View>
+      {saveError ? <Text style={styles.error}>{saveError}</Text> : null}
     </View>
   </SafeAreaView>;
 }
@@ -414,14 +433,24 @@ function MeditationArt() {
 function HomeScreen({ session, onStartPrakriti, onStartCurrentHealth }: { session: Session | null; onStartPrakriti: () => void; onStartCurrentHealth: () => void }) {
   const fullName = session?.user.user_metadata.full_name?.trim();
   const firstName = fullName?.split(/\s+/)[0] || 'there';
-  const [hasPrakriti, setHasPrakriti] = useState(false);
+  const [latestPrakriti, setLatestPrakriti] = useState<Record<Dosha, number> | null>(null);
+  const [hasCurrentHealth, setHasCurrentHealth] = useState(false);
   useEffect(() => {
     if (!session?.user.id) return;
     let active = true;
-    supabase.from('prakriti_assessments').select('id').eq('user_id', session.user.id).order('completed_at', { ascending: false }).limit(1)
-      .then(({ data }) => { if (active) setHasPrakriti(Boolean(data?.length)); });
+    Promise.all([
+      supabase.from('prakriti_assessments').select('vata_percentage, pitta_percentage, kapha_percentage').eq('user_id', session.user.id).order('completed_at', { ascending: false }).limit(1).maybeSingle(),
+      supabase.from('current_health_assessments').select('id').eq('user_id', session.user.id).order('completed_at', { ascending: false }).limit(1),
+    ]).then(([prakritiResult, healthResult]) => {
+      if (!active) return;
+      const result = prakritiResult.data;
+      setLatestPrakriti(result ? { vata: result.vata_percentage, pitta: result.pitta_percentage, kapha: result.kapha_percentage } : null);
+      setHasCurrentHealth(Boolean(healthResult.data?.length));
+    });
     return () => { active = false; };
   }, [session?.user.id]);
+  const hasPrakriti = Boolean(latestPrakriti);
+  const assessmentsComplete = hasPrakriti && hasCurrentHealth;
   const features = [
     { icon: '🥗', label: 'Food' }, { icon: '🧘', label: 'Yoga' },
     { icon: '◉', label: 'Pranayama' }, { icon: '◎', label: 'Panchakarma' },
@@ -435,12 +464,17 @@ function HomeScreen({ session, onStartPrakriti, onStartCurrentHealth }: { sessio
         <View style={styles.bell}><Text style={styles.bellIcon}>♧</Text><View style={styles.notificationDot} /></View>
       </View>
       <View style={styles.dashboardBody}>
-        <View style={styles.assessmentCard}>
+        {assessmentsComplete && latestPrakriti ? <View style={styles.insightCard}>
+          <MiniDoshaDonut percentages={latestPrakriti} />
+          <View style={styles.insightContent}><Text style={styles.insightEyebrow}>YOUR CURRENT BALANCE</Text><Text style={styles.insightTitle}>Your Vatt-pitha dosha is imbalanced</Text><Text style={styles.insightCopy}>Your latest assessments are ready for personalized guidance.</Text>
+            <View style={styles.insightActions}><Pressable onPress={onStartPrakriti}><Text style={styles.insightLink}>Retake Prakriti</Text></Pressable><Pressable onPress={onStartCurrentHealth}><Text style={styles.insightLink}>Update Health</Text></Pressable></View>
+          </View>
+        </View> : <View style={styles.assessmentCard}>
           <Text style={styles.assessmentTitle}>Complete Your Assessments{`\n`}for Personalized Guidance</Text>
           <AssessmentItem number={hasPrakriti ? '✓' : '1'} title="Prakriti Assessment" copy={hasPrakriti ? 'Completed · Tap to retake' : 'Understand your natural constitution'} completed={hasPrakriti} onPress={hasPrakriti ? onStartPrakriti : undefined} />
           <AssessmentItem number="2" title="Current Health Assessment" copy="Tell us how you feel right now" />
           <Pressable onPress={hasPrakriti ? onStartCurrentHealth : onStartPrakriti} style={({ pressed }) => [styles.startButton, pressed && styles.pressed]}><Text style={styles.startButtonText}>{hasPrakriti ? 'Start Current Health Assessment' : 'Start Now'}</Text></Pressable>
-        </View>
+        </View>}
         <Text style={styles.exploreTitle}>Explore Ayurnidaan</Text>
         <View style={styles.featureGrid}>{features.map((feature) => <FeatureTile key={feature.label} {...feature} />)}</View>
       </View>
@@ -464,6 +498,7 @@ function SocialButton({ symbol, label, loading, onPress }: { symbol: string; lab
 function Divider({ label }: { label: string }) { return <View style={styles.dividerRow}><View style={styles.divider} /><Text style={styles.dividerText}>{label}</Text><View style={styles.divider} /></View>; }
 function BackButton({ onPress }: { onPress: () => void }) { return <Pressable accessibilityLabel="Go back" onPress={onPress} style={styles.back}><Text style={styles.backText}>‹</Text></Pressable>; }
 function AssessmentItem({ number, title, copy, completed = false, onPress }: { number: string; title: string; copy: string; completed?: boolean; onPress?: () => void }) { const content = <><View style={[styles.numberBadge, completed && styles.completedBadge]}><Text style={styles.numberText}>{number}</Text></View><View style={styles.assessmentText}><Text style={styles.assessmentItemTitle}>{title}</Text><Text style={styles.assessmentCopy}>{copy}</Text></View></>; return onPress ? <Pressable accessibilityRole="button" onPress={onPress} style={({ pressed }) => [styles.assessmentItem, pressed && styles.pressed]}>{content}</Pressable> : <View style={styles.assessmentItem}>{content}</View>; }
+function MiniDoshaDonut({ percentages }: { percentages: Record<Dosha, number> }) { const colors = ['#2879B9', '#EEA62A', '#5B9B54']; return <View style={styles.miniDonut}>{Array.from({ length: 100 }, (_, index) => { const color = index < percentages.vata ? colors[0] : index < percentages.vata + percentages.pitta ? colors[1] : colors[2]; return <View key={index} style={[styles.miniDonutSegment, { backgroundColor: color, transform: [{ rotate: `${index * 3.6}deg` }, { translateY: -44 }] }]} />; })}<View style={styles.miniDonutCenter}><Text style={styles.miniDonutLabel}>Prakriti</Text></View></View>; }
 function FeatureTile({ icon, label }: { icon: string; label: string }) { return <Pressable accessibilityLabel={label} onPress={() => {}} style={({ pressed }) => [styles.featureTile, pressed && styles.pressed]}><Text style={styles.featureIcon}>{icon}</Text><Text style={styles.featureLabel}>{label}</Text></Pressable>; }
 function NavItem({ icon, label, active = false }: { icon: string; label: string; active?: boolean }) { return <Pressable accessibilityLabel={label} onPress={() => {}} style={styles.navItem}><Text style={[styles.navIcon, active && styles.navActive]}>{icon}</Text><Text style={[styles.navLabel, active && styles.navActive]}>{label}</Text>{active ? <View style={styles.navIndicator} /> : null}</Pressable>; }
 function extractAuthParams(url: string) { const fragment = url.split('#')[1] ?? url.split('?')[1] ?? ''; return Object.fromEntries(new URLSearchParams(fragment)); }
@@ -488,4 +523,5 @@ const styles = StyleSheet.create({
   healthIntroPage: { flex: 1, paddingBottom: 28, paddingHorizontal: 24, paddingTop: 18 }, healthIntroContent: { flex: 1, justifyContent: 'center', paddingBottom: 22 }, meditationArt: { alignSelf: 'center', height: 190, marginTop: 25, position: 'relative', width: 250 }, meditationHalo: { backgroundColor: '#EDF2DD', borderRadius: 70, height: 140, left: 55, position: 'absolute', top: 24, width: 140 }, meditationHead: { backgroundColor: '#B87544', borderRadius: 16, height: 31, left: 109, position: 'absolute', top: 28, width: 31 }, meditationBody: { backgroundColor: '#52704B', borderTopLeftRadius: 24, borderTopRightRadius: 24, height: 75, left: 91, position: 'absolute', top: 56, width: 67 }, meditationArms: { backgroundColor: '#B87544', borderRadius: 8, height: 13, left: 57, position: 'absolute', top: 92, transform: [{ rotate: '-4deg' }], width: 137 }, meditationLegs: { backgroundColor: '#465D3F', borderRadius: 30, height: 37, left: 43, position: 'absolute', top: 125, width: 164 }, meditationLeaf: { backgroundColor: '#83A86B', borderBottomLeftRadius: 24, borderTopRightRadius: 24, height: 74, position: 'absolute', top: 82, width: 35 }, meditationLeafLeft: { left: 25, transform: [{ rotate: '-35deg' }] }, meditationLeafRight: { right: 25, transform: [{ rotate: '35deg' }] }, healthQuestion: { color: '#26312B', fontFamily: serif, fontSize: 23, fontWeight: '700', lineHeight: 31, marginTop: 30 }, selectAllHint: { color: '#68716C', fontSize: 12, marginBottom: 18, marginTop: 6 }, symptomList: { gap: 10 }, symptomOption: { alignItems: 'center', backgroundColor: '#FFFEFA', borderColor: '#DEDED4', borderRadius: 10, borderWidth: 1, flexDirection: 'row', minHeight: 49, paddingHorizontal: 13 }, symptomOptionSelected: { backgroundColor: '#F3F8F4', borderColor: '#A9C4B6' }, symptomCheckbox: { alignItems: 'center', borderColor: '#C5C8C2', borderRadius: 4, borderWidth: 1.2, height: 21, justifyContent: 'center', marginRight: 12, width: 21 }, symptomCheckboxSelected: { backgroundColor: '#075A3F', borderColor: '#075A3F' }, symptomCheck: { color: '#FFF', fontSize: 13, fontWeight: '800' }, symptomLabel: { color: '#3E4742', fontSize: 14, fontWeight: '500' },
   healthSummaryPage: { flex: 1, paddingBottom: 28, paddingHorizontal: 24, paddingTop: 24 }, summaryContent: { flex: 1, justifyContent: 'center', paddingBottom: 45 }, healthSummaryTitle: { color: '#26312B', fontFamily: serif, fontSize: 28, fontWeight: '700', lineHeight: 36, textAlign: 'center' }, summaryCard: { backgroundColor: '#FFFDF7', borderColor: '#E3DED0', borderRadius: 16, borderWidth: 1, marginTop: 34, overflow: 'hidden' }, summaryRow: { borderBottomColor: '#E7E3D9', borderBottomWidth: 1, paddingHorizontal: 18, paddingVertical: 16 }, summaryRowLast: { borderBottomWidth: 0 }, summaryLabel: { color: '#747B76', fontSize: 11, fontWeight: '700', marginBottom: 5, textTransform: 'uppercase' }, summaryValue: { color: '#303A34', fontSize: 14, fontWeight: '600', lineHeight: 20 }, healthReadyPage: { flex: 1, paddingBottom: 28, paddingHorizontal: 24, paddingTop: 24 }, healthReadyContent: { alignItems: 'center', flex: 1, justifyContent: 'center', paddingBottom: 40 }, readyIcon: { alignItems: 'center', backgroundColor: '#E5F2E7', borderRadius: 30, height: 60, justifyContent: 'center', marginBottom: 23, width: 60 }, readyIconCheck: { color: '#3E9A50', fontSize: 30, fontWeight: '800' }, readyCopy: { color: '#68716C', fontSize: 14, lineHeight: 21, marginTop: 16, maxWidth: 275, textAlign: 'center' }, readyChecklist: { alignSelf: 'stretch', gap: 18, marginHorizontal: 28, marginTop: 38 }, readyItem: { alignItems: 'center', flexDirection: 'row', gap: 13 }, readyCheck: { alignItems: 'center', backgroundColor: '#4CA65A', borderRadius: 11, height: 22, justifyContent: 'center', width: 22 }, readyCheckText: { color: '#FFF', fontSize: 13, fontWeight: '800' }, readyLabel: { color: '#35413A', fontSize: 14, fontWeight: '600' }, readyFooter: { color: '#5F6963', fontSize: 13, lineHeight: 20, marginTop: 42, textAlign: 'center' },
   homeSafe: { backgroundColor: '#004735', flex: 1 }, homeScroll: { backgroundColor: '#FBF8EF', flexGrow: 1, paddingBottom: 112 }, homeHeader: { alignItems: 'center', backgroundColor: '#004735', flexDirection: 'row', justifyContent: 'space-between', minHeight: 198, paddingBottom: 60, paddingHorizontal: 25, paddingTop: 29 }, greeting: { color: '#D9E7DF', fontSize: 19, fontWeight: '500', lineHeight: 25 }, greetingName: { color: '#FFF', fontFamily: serif, fontSize: 40, fontWeight: '700', lineHeight: 47, marginTop: 2 }, bell: { alignItems: 'center', borderColor: '#C7DED3', borderRadius: 22, borderWidth: 1.2, height: 44, justifyContent: 'center', width: 44 }, bellIcon: { color: '#FFF', fontSize: 26, transform: [{ rotate: '180deg' }] }, notificationDot: { backgroundColor: '#E5B54D', borderRadius: 4, height: 8, position: 'absolute', right: 4, top: 3, width: 8 }, dashboardBody: { paddingHorizontal: 18 }, assessmentCard: { backgroundColor: '#FFFDF7', borderColor: '#E7E0CE', borderRadius: 21, borderWidth: 1, elevation: 4, gap: 22, marginTop: -44, padding: 23, shadowColor: '#17352E', shadowOffset: { width: 0, height: 7 }, shadowOpacity: .1, shadowRadius: 14 }, assessmentTitle: { color: '#28332D', fontFamily: serif, fontSize: 21, fontWeight: '700', lineHeight: 29 }, assessmentItem: { alignItems: 'flex-start', flexDirection: 'row', gap: 15 }, numberBadge: { alignItems: 'center', backgroundColor: '#075A3F', borderRadius: 16, height: 32, justifyContent: 'center', marginTop: 2, width: 32 }, completedBadge: { backgroundColor: '#3E8A52' }, numberText: { color: '#FFF', fontSize: 15, fontWeight: '800' }, assessmentText: { flex: 1 }, assessmentItemTitle: { color: '#303A34', fontSize: 16, fontWeight: '700' }, assessmentCopy: { color: '#737B75', fontSize: 14, lineHeight: 20, marginTop: 4 }, startButton: { alignItems: 'center', backgroundColor: '#075A3F', borderRadius: 11, justifyContent: 'center', minHeight: 51 }, startButtonText: { color: '#FFF', fontSize: 15, fontWeight: '700', textAlign: 'center' }, exploreTitle: { color: '#28332D', fontFamily: serif, fontSize: 22, fontWeight: '700', marginBottom: 17, marginTop: 29 }, featureGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 }, featureTile: { alignItems: 'center', backgroundColor: '#FFF6E6', borderColor: '#F3E7D1', borderRadius: 16, borderWidth: 1, height: 108, justifyContent: 'center', width: '30.5%' }, featureIcon: { fontSize: 31 }, featureLabel: { color: '#3D4640', fontSize: 12, fontWeight: '700', marginTop: 10, textAlign: 'center' }, bottomNav: { alignItems: 'center', backgroundColor: '#FFF', borderColor: '#E8E3D8', borderTopWidth: 1, bottom: 0, flexDirection: 'row', height: 86, justifyContent: 'space-around', left: 0, paddingBottom: 8, position: 'absolute', right: 0 }, navItem: { alignItems: 'center', flex: 1, justifyContent: 'center' }, navIcon: { color: '#818A84', fontSize: 27, fontWeight: '700' }, navLabel: { color: '#818A84', fontSize: 11, marginTop: 4 }, navActive: { color: '#075A3F', fontWeight: '800' }, navIndicator: { backgroundColor: '#075A3F', borderRadius: 2, height: 3, marginTop: 5, width: 20 },
+  insightCard: { alignItems: 'center', backgroundColor: '#FFFDF7', borderColor: '#E7E0CE', borderRadius: 21, borderWidth: 1, elevation: 4, flexDirection: 'row', marginTop: -44, minHeight: 210, paddingHorizontal: 18, paddingVertical: 22, shadowColor: '#17352E', shadowOffset: { width: 0, height: 7 }, shadowOpacity: .1, shadowRadius: 14 }, miniDonut: { height: 118, marginRight: 17, position: 'relative', width: 118 }, miniDonutSegment: { borderRadius: 2, height: 14, left: 57, position: 'absolute', top: 52, width: 4 }, miniDonutCenter: { alignItems: 'center', backgroundColor: '#FFFDF7', borderColor: '#EEE5D5', borderRadius: 35, borderWidth: 1, height: 70, justifyContent: 'center', left: 24, position: 'absolute', top: 24, width: 70 }, miniDonutLabel: { color: '#435149', fontFamily: serif, fontSize: 12, fontWeight: '700' }, insightContent: { flex: 1 }, insightEyebrow: { color: '#B08A3D', fontSize: 9, fontWeight: '800', letterSpacing: 1.1 }, insightTitle: { color: '#26342D', fontFamily: serif, fontSize: 18, fontWeight: '700', lineHeight: 24, marginTop: 6 }, insightCopy: { color: '#727A74', fontSize: 11, lineHeight: 16, marginTop: 7 }, insightActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginTop: 14 }, insightLink: { color: '#075A3F', fontSize: 11, fontWeight: '800' },
 });
