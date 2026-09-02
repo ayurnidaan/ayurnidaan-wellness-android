@@ -354,30 +354,7 @@ function getResultMeaning(dominant: string[]) {
 }
 
 function CurrentHealthAssessment({ session, onExit }: { session: Session | null; onExit: () => void }) {
-  const [stage, setStage] = useState<'intro' | 'question' | 'summary' | 'ready'>('intro');
-  const [selected, setSelected] = useState<string[]>([]);
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState('');
-  const symptoms = ['Bloating / Gas', 'Acidity / Heartburn', 'Constipation', 'Fatigue / Tiredness', 'Poor Sleep'];
-  function toggleSymptom(symptom: string) {
-    setSaveError('');
-    setSelected((values) => values.includes(symptom) ? values.filter((value) => value !== symptom) : [...values, symptom]);
-  }
-  async function completeCurrentHealth() {
-    if (!session?.user.id) return setSaveError('Please sign in again before saving your assessment.');
-    setSaving(true); setSaveError('');
-    const sleepSummary = selected.includes('Poor Sleep') ? 'Irregular / Needs attention' : '6–7 hrs / Regular';
-    const { error } = await supabase.from('current_health_assessments').insert({
-      user_id: session.user.id,
-      symptoms: selected,
-      lifestyle_summary: 'Moderate Activity',
-      sleep_summary: sleepSummary,
-      stress_summary: 'Moderate',
-    });
-    setSaving(false);
-    if (error) return setSaveError(error.message);
-    setStage('summary');
-  }
+  const [stage, setStage] = useState<'intro' | 'chat' | 'ready'>('intro');
   if (stage === 'intro') return <SafeAreaView style={styles.assessmentSafe}>
     <StatusBar style="dark" />
     <View style={styles.healthIntroPage}>
@@ -392,22 +369,43 @@ function CurrentHealthAssessment({ session, onExit }: { session: Session | null;
           <AssessmentFact icon="▣" text="Medications & conditions" />
         </View>
       </View>
-      <PrimaryButton label="Start Assessment" onPress={() => setStage('question')} />
+      <PrimaryButton label="Start Assessment" onPress={() => setStage('chat')} />
     </View>
   </SafeAreaView>;
-  if (stage === 'summary') return <CurrentHealthSummary symptoms={selected} onContinue={() => setStage('ready')} />;
   if (stage === 'ready') return <HealthProfileReady onContinue={onExit} />;
-  return <SafeAreaView style={styles.assessmentSafe}>
-    <StatusBar style="dark" />
-    <View style={styles.questionPage}>
-      <BackButton onPress={() => setStage('intro')} /><Text style={styles.assessmentPageTitle}>Current Health Assessment</Text>
-      <Text style={styles.questionCount}>Step 1 of 6</Text><View style={styles.progressTrack}><View style={[styles.progressFill, { width: '16.67%' }]} /></View>
-      <Text style={styles.healthQuestion}>Do you experience any of the following?</Text><Text style={styles.selectAllHint}>(Select all that apply)</Text>
-      <View style={styles.symptomList}>{symptoms.map((symptom) => { const checked = selected.includes(symptom); return <Pressable key={symptom} accessibilityRole="checkbox" accessibilityState={{ checked }} onPress={() => toggleSymptom(symptom)} style={[styles.symptomOption, checked && styles.symptomOptionSelected]}><View style={[styles.symptomCheckbox, checked && styles.symptomCheckboxSelected]}>{checked ? <Text style={styles.symptomCheck}>✓</Text> : null}</View><Text style={styles.symptomLabel}>{symptom}</Text></Pressable>; })}</View>
-      <View style={styles.questionActions}><SecondaryButton label="Back" onPress={() => setStage('intro')} /><View style={styles.continueHalf}><PrimaryButton label="Continue" loading={saving} onPress={completeCurrentHealth} /></View></View>
-      {saveError ? <Text style={styles.error}>{saveError}</Text> : null}
-    </View>
-  </SafeAreaView>;
+  return <CurrentHealthChat session={session} onBack={() => setStage('intro')} onComplete={() => setStage('ready')} />;
+}
+
+const currentHealthConclusions = [
+  'Your Vata dosha is imbalanced', 'Your Pitta dosha is imbalanced', 'Your Kapha dosha is imbalanced',
+  'Your Vata and Pitta doshas are imbalanced', 'Your Vata and Kapha doshas are imbalanced', 'Your Pitta and Kapha doshas are imbalanced',
+  'Your Vata, Pitta and Kapha doshas are imbalanced',
+];
+
+function CurrentHealthChat({ session, onBack, onComplete }: { session: Session | null; onBack: () => void; onComplete: () => void }) {
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [input, setInput] = useState('');
+  const [sending, setSending] = useState(true);
+  const [error, setError] = useState('');
+  const started = useRef(false);
+  const scrollRef = useRef<ScrollView>(null);
+  useEffect(() => { if (!started.current) { started.current = true; requestReply([]); } }, []);
+  async function requestReply(conversation: ChatMessage[]) {
+    setSending(true); setError('');
+    const { data, error: functionError } = await supabase.functions.invoke('current-health-chat', { body: { messages: conversation } });
+    const reply = typeof data?.reply === 'string' ? data.reply.trim().replace(/^"|"$/g, '') : '';
+    if (functionError || !reply) { setSending(false); setError(data?.error || functionError?.message || 'Could not continue the assessment. Please try again.'); return; }
+    const completed = currentHealthConclusions.includes(reply);
+    const completedConversation: ChatMessage[] = [...conversation, { role: 'assistant', content: reply }];
+    setMessages(completedConversation); setSending(false);
+    if (!completed) return;
+    if (!session?.user.id) { setError('Please sign in again before saving your assessment.'); return; }
+    const { error: saveError } = await supabase.from('current_health_assessments').insert({ user_id: session.user.id, symptoms: [], conclusion: reply, vata_imbalanced: reply.includes('Vata'), pitta_imbalanced: reply.includes('Pitta'), kapha_imbalanced: reply.includes('Kapha'), conversation: completedConversation });
+    if (saveError) { setError(saveError.message); return; }
+    onComplete();
+  }
+  function send() { const content = input.trim(); if (!content || sending) return; const next: ChatMessage[] = [...messages, { role: 'user', content }]; setMessages(next); setInput(''); requestReply(next); }
+  return <SafeAreaView style={styles.currentHealthChatSafe}><StatusBar style="light" /><KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={0}><View style={styles.currentHealthChatHeader}><BackButton onPress={onBack} light /><View style={styles.currentHealthChatHeading}><Text style={styles.aiTitle}>Current Health Assessment</Text><Text style={styles.aiSubtitle}>A conversational Vikriti assessment</Text></View></View><ScrollView ref={scrollRef} style={styles.flex} contentContainerStyle={styles.chatMessages} keyboardShouldPersistTaps="handled" onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}>{messages.map((message, index) => <View key={index} style={[styles.chatBubble, message.role === 'user' ? styles.userBubble : styles.assistantBubble]}><Text style={[styles.chatText, message.role === 'user' && styles.userChatText]}>{message.content}</Text></View>)}{sending ? <View style={[styles.chatBubble, styles.assistantBubble]}><ActivityIndicator color="#075A3F" /></View> : null}{error ? <View style={styles.chatErrorCard}><Text style={styles.error}>{error}</Text><Pressable onPress={() => requestReply(messages)}><Text style={styles.chatRetry}>Try again</Text></Pressable></View> : null}</ScrollView><View style={styles.chatComposer}><TextInput value={input} onChangeText={setInput} onSubmitEditing={send} editable={!sending} placeholder="Describe how you are feeling..." placeholderTextColor="#929993" returnKeyType="send" style={styles.chatInput} /><Pressable disabled={sending} onPress={send} style={[styles.chatSend, sending && styles.chatSendDisabled]}><Text style={styles.chatSendText}>➤</Text></Pressable></View></KeyboardAvoidingView></SafeAreaView>;
 }
 
 function CurrentHealthSummary({ symptoms, onContinue }: { symptoms: string[]; onContinue: () => void }) {
@@ -464,19 +462,21 @@ function HomeScreen({ session, onStartPrakriti, onStartCurrentHealth, onOpenDoct
   const firstName = fullName?.split(/\s+/)[0] || 'there';
   const [latestPrakriti, setLatestPrakriti] = useState<Record<Dosha, number> | null>(null);
   const [hasCurrentHealth, setHasCurrentHealth] = useState(false);
+  const [latestVikriti, setLatestVikriti] = useState<string | null>(null);
   const [appointment, setAppointment] = useState<{ doctor_name: string; doctor_initials: string; appointment_date: string; appointment_time: string } | null>(null);
   useEffect(() => {
     if (!session?.user.id) return;
     let active = true;
     Promise.all([
       supabase.from('prakriti_assessments').select('vata_percentage, pitta_percentage, kapha_percentage').eq('user_id', session.user.id).order('completed_at', { ascending: false }).limit(1).maybeSingle(),
-      supabase.from('current_health_assessments').select('id').eq('user_id', session.user.id).order('completed_at', { ascending: false }).limit(1),
+      supabase.from('current_health_assessments').select('id, conclusion').eq('user_id', session.user.id).order('completed_at', { ascending: false }).limit(1),
       supabase.from('appointments').select('doctor_name, doctor_initials, appointment_date, appointment_time').eq('user_id', session.user.id).eq('status', 'booked').order('created_at', { ascending: false }).limit(1).maybeSingle(),
     ]).then(([prakritiResult, healthResult, appointmentResult]) => {
       if (!active) return;
       const result = prakritiResult.data;
       setLatestPrakriti(result ? { vata: result.vata_percentage, pitta: result.pitta_percentage, kapha: result.kapha_percentage } : null);
       setHasCurrentHealth(Boolean(healthResult.data?.length));
+      setLatestVikriti(healthResult.data?.[0]?.conclusion ?? null);
       setAppointment(appointmentResult.data ?? null);
     });
     return () => { active = false; };
@@ -507,7 +507,7 @@ function HomeScreen({ session, onStartPrakriti, onStartCurrentHealth, onOpenDoct
             <MiniDoshaDonut percentages={latestPrakriti} />
             <MajorDoshaPercentages percentages={latestPrakriti} />
           </View>
-          <View style={styles.insightContent}><Text style={styles.insightEyebrow}>YOUR CURRENT BALANCE</Text><Text style={styles.insightTitle}>Your Vatt-pitha dosha is imbalanced</Text><Text style={styles.insightCopy}>Your latest assessments are ready for personalized guidance.</Text>
+          <View style={styles.insightContent}><Text style={styles.insightEyebrow}>YOUR CURRENT BALANCE</Text><Text style={styles.insightTitle}>{latestVikriti ?? 'Your current balance is ready'}</Text><Text style={styles.insightCopy}>Your latest assessments are ready for personalized guidance.</Text>
             <View style={styles.insightActions}><Pressable onPress={onStartPrakriti}><Text style={styles.insightLink}>Retake Prakriti</Text></Pressable><Pressable onPress={onStartCurrentHealth}><Text style={styles.insightLink}>Update Health</Text></Pressable></View>
           </View>
         </View> : <View style={styles.assessmentCard}>
@@ -798,7 +798,7 @@ function PrimaryButton({ label, loading, onPress }: { label: string; loading?: b
 function SecondaryButton({ label, onPress }: { label: string; onPress: () => void }) { return <Pressable onPress={onPress} style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}><Text style={styles.secondaryText}>{label}</Text></Pressable>; }
 function SocialButton({ symbol, label, loading, onPress }: { symbol: string; label: string; loading?: boolean; onPress: () => void }) { return <Pressable accessibilityLabel={`Continue with ${label}`} disabled={loading} onPress={onPress} style={({ pressed }) => [styles.socialButton, pressed && styles.pressed]}>{loading ? <ActivityIndicator color={colors.primaryDark} /> : <Text style={[styles.socialSymbol, label === 'Google' && styles.google]}>{symbol}</Text>}<Text style={styles.socialLabel}>{label}</Text></Pressable>; }
 function Divider({ label }: { label: string }) { return <View style={styles.dividerRow}><View style={styles.divider} /><Text style={styles.dividerText}>{label}</Text><View style={styles.divider} /></View>; }
-function BackButton({ onPress }: { onPress: () => void }) { return <Pressable accessibilityLabel="Go back" onPress={onPress} style={styles.back}><Text style={styles.backText}>‹</Text></Pressable>; }
+function BackButton({ onPress, light = false }: { onPress: () => void; light?: boolean }) { return <Pressable accessibilityLabel="Go back" onPress={onPress} style={styles.back}><Text style={[styles.backText, light && styles.backTextLight]}>‹</Text></Pressable>; }
 function AssessmentItem({ number, title, copy, completed = false, onPress }: { number: string; title: string; copy: string; completed?: boolean; onPress?: () => void }) { const content = <><View style={[styles.numberBadge, completed && styles.completedBadge]}><Text style={styles.numberText}>{number}</Text></View><View style={styles.assessmentText}><Text style={styles.assessmentItemTitle}>{title}</Text><Text style={styles.assessmentCopy}>{copy}</Text></View></>; return onPress ? <Pressable accessibilityRole="button" onPress={onPress} style={({ pressed }) => [styles.assessmentItem, pressed && styles.pressed]}>{content}</Pressable> : <View style={styles.assessmentItem}>{content}</View>; }
 function MiniDoshaDonut({ percentages }: { percentages: Record<Dosha, number> }) { const colors = ['#2879B9', '#EEA62A', '#5B9B54']; return <View style={styles.miniDonut}>{Array.from({ length: 100 }, (_, index) => { const color = index < percentages.vata ? colors[0] : index < percentages.vata + percentages.pitta ? colors[1] : colors[2]; return <View key={index} style={[styles.miniDonutSegment, { backgroundColor: color, transform: [{ rotate: `${index * 3.6}deg` }, { translateY: -44 }] }]} />; })}<View style={styles.miniDonutCenter}><Text style={styles.miniDonutLabel}>Prakriti</Text></View></View>; }
 function MajorDoshaPercentages({ percentages }: { percentages: Record<Dosha, number> }) { const details: Record<Dosha, { label: string; color: string }> = { vata: { label: 'Vata', color: '#2879B9' }, pitta: { label: 'Pitta', color: '#EEA62A' }, kapha: { label: 'Kapha', color: '#5B9B54' } }; const majorDoshas = (Object.keys(percentages) as Dosha[]).sort((a, b) => percentages[b] - percentages[a]).slice(0, 2); return <View style={styles.homeDoshaPercentages}>{majorDoshas.map(dosha => <Text key={dosha} style={[styles.homeDoshaPercentage, { color: details[dosha].color }]}>{details[dosha].label} {percentages[dosha]}%</Text>)}</View>; }
@@ -838,6 +838,7 @@ const styles = StyleSheet.create({
   ordersPage: { flex: 1, paddingHorizontal: 22, paddingTop: 30 }, ordersLoader: { marginTop: 80 }, ordersList: { gap: 12, paddingBottom: 30, paddingTop: 8 }, orderCard: { alignItems: 'center', backgroundColor: '#FFFDF8', borderColor: '#E4E0D5', borderRadius: 15, borderWidth: 1, flexDirection: 'row', justifyContent: 'space-between', minHeight: 105, padding: 16 }, orderNumber: { color: '#2B3630', fontFamily: serif, fontSize: 16, fontWeight: '700' }, orderDate: { color: '#737B76', fontSize: 12, marginTop: 6 }, orderItemCount: { color: '#4F5B54', fontSize: 12, fontWeight: '600', marginTop: 7 }, orderCardRight: { alignItems: 'flex-end' }, orderAmount: { color: '#075A3F', fontSize: 17, fontWeight: '800' }, noOrders: { flex: 1, justifyContent: 'center', paddingBottom: 50 }, noOrdersIcon: { color: '#7B8E83', fontSize: 54, marginBottom: 18, textAlign: 'center' }, orderDetailScroll: { paddingBottom: 36, paddingHorizontal: 22, paddingTop: 30 }, orderDetailNumber: { color: '#2D3731', fontFamily: serif, fontSize: 19, fontWeight: '700', marginTop: 8 }, orderItemsCard: { backgroundColor: '#FFFDF8', borderColor: '#E4E0D5', borderRadius: 16, borderWidth: 1, marginTop: 22, overflow: 'hidden' }, orderDetailItem: { alignItems: 'center', borderBottomColor: '#E9E5DC', borderBottomWidth: 1, flexDirection: 'row', padding: 14 }, orderItemVisual: { alignItems: 'center', backgroundColor: '#EAF0E6', borderRadius: 10, height: 58, justifyContent: 'center', marginRight: 12, width: 58 }, orderItemIcon: { fontSize: 29 }, orderItemCopy: { flex: 1 }, orderQuantity: { color: '#536059', fontSize: 12, fontWeight: '600', marginTop: 5 }, orderLineTotal: { color: '#2E3933', fontSize: 14, fontWeight: '800' }, orderTotalRow: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 22 }, orderDetailTotal: { color: '#075A3F', fontSize: 21, fontWeight: '800' }, trackingTitle: { color: '#29352F', fontFamily: serif, fontSize: 23, fontWeight: '700', marginBottom: 18, marginTop: 10 }, trackingCard: { backgroundColor: '#FFFDF8', borderColor: '#E4E0D5', borderRadius: 17, borderWidth: 1, marginBottom: 24, padding: 20 }, trackingStep: { flexDirection: 'row', minHeight: 67 }, trackingMarkerColumn: { alignItems: 'center', marginRight: 15, width: 29 }, trackingMarker: { alignItems: 'center', backgroundColor: '#FFF', borderColor: '#8A9B92', borderRadius: 14, borderWidth: 2, height: 28, justifyContent: 'center', width: 28 }, trackingMarkerDone: { backgroundColor: '#075A3F', borderColor: '#075A3F' }, trackingMarkerText: { color: '#718078', fontSize: 14, fontWeight: '800' }, trackingMarkerTextDone: { color: '#FFF' }, trackingLine: { backgroundColor: '#B9C7C0', flex: 1, width: 3 }, trackingLineDone: { backgroundColor: '#075A3F' }, trackingLabel: { color: '#77807B', fontSize: 15, fontWeight: '600', paddingTop: 5 }, trackingLabelDone: { color: '#303B35', fontWeight: '800' },
   appointmentListCard: { alignItems: 'center', backgroundColor: '#FFFDF8', borderColor: '#E4E0D5', borderRadius: 15, borderWidth: 1, flexDirection: 'row', minHeight: 105, padding: 14 }, appointmentListPortrait: { alignItems: 'center', backgroundColor: '#E4EFE5', borderRadius: 31, height: 62, justifyContent: 'center', marginRight: 13, overflow: 'hidden', width: 62 }, appointmentListPortraitIcon: { fontSize: 37 }, appointmentListCopy: { flex: 1 }, appointmentType: { color: '#52705F', fontSize: 11, fontWeight: '700', marginTop: 6 }, appointmentDetailScroll: { paddingBottom: 40, paddingHorizontal: 22, paddingTop: 30 }, appointmentDoctorCard: { alignItems: 'center', backgroundColor: '#FFFDF8', borderColor: '#E4E0D5', borderRadius: 18, borderWidth: 1, marginBottom: 18, padding: 24 }, appointmentDoctorPortrait: { alignItems: 'center', backgroundColor: '#E4EFE5', borderRadius: 44, height: 88, justifyContent: 'center', marginBottom: 15, overflow: 'hidden', width: 88 }, appointmentDoctorPortraitIcon: { fontSize: 53 }, appointmentDoctorName: { color: '#26312B', fontFamily: serif, fontSize: 22, fontWeight: '700' }, appointmentDoctorMeta: { color: '#69736D', fontSize: 13, marginTop: 7 }, clinicalCard: { backgroundColor: '#FFFDF8', borderColor: '#E4E0D5', borderRadius: 17, borderWidth: 1, marginTop: 14, padding: 18 }, clinicalTitleRow: { alignItems: 'center', flexDirection: 'row' }, clinicalIcon: { alignItems: 'center', backgroundColor: '#E8F1E8', borderRadius: 18, height: 36, justifyContent: 'center', marginRight: 11, width: 36 }, clinicalIconText: { color: '#075A3F', fontSize: 15, fontWeight: '900' }, clinicalTitle: { color: '#2C3731', fontFamily: serif, fontSize: 18, fontWeight: '700' }, clinicalContent: { color: '#4F5B54', fontSize: 14, lineHeight: 22, marginTop: 16 }, clinicalEmpty: { color: '#8A918D', fontStyle: 'italic' },
   aiSafe: { backgroundColor: '#FBF8EF', flex: 1, paddingBottom: 86 }, aiHeader: { backgroundColor: '#075A3F', paddingBottom: 20, paddingHorizontal: 22, paddingTop: 31 }, aiTitle: { color: '#FFF', fontFamily: serif, fontSize: 25, fontWeight: '700' }, aiSubtitle: { color: '#D5E6DD', fontSize: 12, marginTop: 4 }, chatMessages: { gap: 12, padding: 18 }, chatBubble: { borderRadius: 17, maxWidth: '82%', paddingHorizontal: 15, paddingVertical: 12 }, assistantBubble: { alignSelf: 'flex-start', backgroundColor: '#FFF', borderColor: '#E1DED5', borderWidth: 1, borderTopLeftRadius: 5 }, userBubble: { alignSelf: 'flex-end', backgroundColor: '#075A3F', borderTopRightRadius: 5 }, chatText: { color: '#37413B', fontSize: 14, lineHeight: 20 }, userChatText: { color: '#FFF' }, chatComposer: { alignItems: 'center', backgroundColor: '#FFF', borderTopColor: '#E4E0D7', borderTopWidth: 1, flexDirection: 'row', gap: 10, padding: 12 }, chatInput: { backgroundColor: '#F4F4EF', borderColor: '#DEDFD8', borderRadius: 22, borderWidth: 1, color: '#2E3832', flex: 1, minHeight: 44, paddingHorizontal: 15 }, chatSend: { alignItems: 'center', backgroundColor: '#075A3F', borderRadius: 22, height: 44, justifyContent: 'center', width: 44 }, chatSendText: { color: '#FFF', fontSize: 20 },
+  currentHealthChatSafe: { backgroundColor: '#FBF8EF', flex: 1 }, currentHealthChatHeader: { alignItems: 'center', backgroundColor: '#075A3F', flexDirection: 'row', paddingBottom: 18, paddingHorizontal: 14, paddingTop: 20 }, currentHealthChatHeading: { flex: 1, paddingRight: 42 }, backTextLight: { color: '#FFF' }, chatErrorCard: { alignSelf: 'center', backgroundColor: '#FFF2F2', borderColor: '#E8CACA', borderRadius: 12, borderWidth: 1, padding: 12, width: '92%' }, chatRetry: { color: '#075A3F', fontSize: 13, fontWeight: '800', marginTop: 8, textAlign: 'center' }, chatSendDisabled: { opacity: .45 },
   editProfileScroll: { flexGrow: 1, paddingBottom: 40, paddingHorizontal: 23, paddingTop: 30 },
   monthArrowDisabled: { color: '#B9BFBB' }, calendarDayTextDisabled: { color: '#C3C6C3' },
   miniDonutColumn: { alignItems: 'center' }, homeDoshaPercentages: { flexDirection: 'row', gap: 6, marginRight: 17, marginTop: 6 }, homeDoshaPercentage: { color: '#68736D', fontSize: 9, fontWeight: '700', lineHeight: 13 },
