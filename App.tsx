@@ -581,7 +581,6 @@ function HomeScreen({ session, onStartPrakriti, onStartCurrentHealth, onOpenDoct
     <ScrollView contentContainerStyle={styles.homeScroll} showsVerticalScrollIndicator={false}>
       <View style={styles.homeHeader}>
         <View><Text style={styles.greeting}>Good Morning,</Text><Text style={styles.greetingName}>{firstName} 👋</Text></View>
-        <View style={styles.bell}><Text style={styles.bellIcon}>♧</Text><View style={styles.notificationDot} /></View>
       </View>
       <View style={styles.dashboardBody}>
         {assessmentsComplete && latestPrakriti ? <View style={styles.insightCard}>
