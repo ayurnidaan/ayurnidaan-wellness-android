@@ -419,32 +419,43 @@ function parseVikritiConclusion(content: string) {
   if (!option) return null;
   const symptomMatch = content.match(/Symptoms\s*:\s*([^\r\n]+)/i);
   const symptoms = (symptomMatch?.[1] ?? '').split('|').map(symptom => symptom.trim()).filter(Boolean);
-  return { conclusion: `Your ${option.label} ${option.doshas.length === 1 ? 'dosha is' : 'doshas are'} imbalanced`, doshas: option.doshas, symptoms };
+  const reasoningMatch = content.match(/Reasoning\s*:\s*([^\r\n]+)/i);
+  const reasoning = (reasoningMatch?.[1] ?? '').replace(/\s+/g, ' ').trim();
+  return { conclusion: `Your ${option.label} ${option.doshas.length === 1 ? 'dosha is' : 'doshas are'} imbalanced`, doshas: option.doshas, symptoms, reasoning };
 }
 const currentHealthOpening = 'Please describe the main symptom, complaint, or health concern you are experiencing right now.';
 const finalComplaintQuestion = 'Any more complaints?';
+const currentHealthDomains = ['hunger', 'thirst', 'sleep', 'stool', 'urine', 'sweat'] as const;
+type CurrentHealthDomain = typeof currentHealthDomains[number];
+type CurrentHealthQuestionPhase = 'complaint' | 'domain';
 
 function CurrentHealthChat({ session, onBack, onComplete }: { session: Session | null; onBack: () => void; onComplete: () => void }) {
   const [messages, setMessages] = useState<ChatMessage[]>([{ role: 'assistant', content: currentHealthOpening }]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
-  const [modelQuestionCount, setModelQuestionCount] = useState(0);
+  const [complaintFollowUpCount, setComplaintFollowUpCount] = useState(0);
+  const [domainQuestionIndex, setDomainQuestionIndex] = useState(0);
   const [awaitingFinalComplaint, setAwaitingFinalComplaint] = useState(false);
   const [conclusionRequired, setConclusionRequired] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
-  async function requestReply(conversation: ChatMessage[], forceConclusion = false) {
+  async function requestReply(conversation: ChatMessage[], forceConclusion = false, questionPhase: CurrentHealthQuestionPhase = 'complaint', requiredDomain?: CurrentHealthDomain) {
     setSending(true); setError('');
-    const { data, error: functionError } = await supabase.functions.invoke('current-health-chat', { body: { messages: conversation.slice(1), forceConclusion } });
+    const { data, error: functionError } = await supabase.functions.invoke('current-health-chat', { body: { messages: conversation.slice(1), forceConclusion, questionPhase, requiredDomain } });
     const reply = typeof data?.reply === 'string' ? data.reply.trim().replace(/^"|"$/g, '') : '';
     let functionMessage = '';
     if (functionError instanceof FunctionsHttpError) { try { const details = await functionError.context.json(); functionMessage = details?.error ?? ''; } catch {} }
     if (functionError || !reply) { setSending(false); setError(functionMessage || data?.error || functionError?.message || 'Could not continue the assessment. Please try again.'); return; }
     const result = parseVikritiConclusion(reply);
-    if (forceConclusion && (!result || !result.symptoms.length)) { setSending(false); setError('The assessment did not return a valid conclusion and symptom list. Please try again.'); return; }
-    const completedConversation: ChatMessage[] = [...conversation, { role: 'assistant', content: result ? `${result.conclusion}\nSymptoms: ${result.symptoms.join(' | ')}` : reply }];
+    if (!forceConclusion && result) { setSending(false); setError('The assessment tried to conclude too early. Please try again.'); return; }
+    if (forceConclusion && (!result || !result.symptoms.length || !result.reasoning)) { setSending(false); setError('The assessment did not return a valid conclusion, symptom list, and reasoning. Please try again.'); return; }
+    const completedConversation: ChatMessage[] = [...conversation, { role: 'assistant', content: result ? `${result.conclusion}\nSymptoms: ${result.symptoms.join(' | ')}\nReasoning: ${result.reasoning}` : reply }];
     setMessages(completedConversation); setSending(false);
-    if (!result) { setModelQuestionCount(count => Math.min(count + 1, 5)); return; }
+    if (!result) {
+      if (questionPhase === 'complaint') setComplaintFollowUpCount(count => Math.min(count + 1, 3));
+      else setDomainQuestionIndex(index => Math.min(index + 1, currentHealthDomains.length));
+      return;
+    }
     setConclusionRequired(false);
     if (!session?.user.id) { setError('Please sign in again before saving your assessment.'); return; }
     const { error: saveError } = await supabase.from('current_health_assessments').insert({ user_id: session.user.id, symptoms: result.symptoms, conclusion: result.conclusion, vata_imbalanced: result.doshas.includes('Vata'), pitta_imbalanced: result.doshas.includes('Pitta'), kapha_imbalanced: result.doshas.includes('Kapha'), conversation: completedConversation });
@@ -459,12 +470,24 @@ function CurrentHealthChat({ session, onBack, onComplete }: { session: Session |
     if (awaitingFinalComplaint) {
       setMessages(next); setAwaitingFinalComplaint(false); setConclusionRequired(true); requestReply(next, true); return;
     }
-    if (modelQuestionCount >= 5) {
+    if (complaintFollowUpCount < 3) {
+      setMessages(next); requestReply(next, false, 'complaint'); return;
+    }
+    const requiredDomain = currentHealthDomains[domainQuestionIndex];
+    if (requiredDomain) {
+      setMessages(next); requestReply(next, false, 'domain', requiredDomain); return;
+    }
+    if (domainQuestionIndex >= currentHealthDomains.length) {
       setMessages([...next, { role: 'assistant', content: finalComplaintQuestion }]); setAwaitingFinalComplaint(true); return;
     }
-    setMessages(next); requestReply(next);
   }
-  return <SafeAreaView style={styles.currentHealthChatSafe}><StatusBar style="light" /><KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={0}><View style={styles.currentHealthChatHeader}><BackButton onPress={onBack} light /><View style={styles.currentHealthChatHeading}><Text style={styles.aiTitle}>Current Health Assessment</Text><Text style={styles.aiSubtitle}>A conversational Vikriti assessment</Text></View></View><ScrollView ref={scrollRef} style={styles.flex} contentContainerStyle={styles.chatMessages} keyboardShouldPersistTaps="handled" onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}>{messages.map((message, index) => <View key={index} style={[styles.chatBubble, message.role === 'user' ? styles.userBubble : styles.assistantBubble]}><Text style={[styles.chatText, message.role === 'user' && styles.userChatText]}>{message.content}</Text></View>)}{sending ? <View style={[styles.chatBubble, styles.assistantBubble]}><ActivityIndicator color="#075A3F" /></View> : null}{error ? <View style={styles.chatErrorCard}><Text style={styles.error}>{error}</Text><Pressable onPress={() => requestReply(messages, conclusionRequired)}><Text style={styles.chatRetry}>Try again</Text></Pressable></View> : null}</ScrollView><View style={styles.chatComposer}><TextInput value={input} onChangeText={setInput} onSubmitEditing={send} editable={!sending && !conclusionRequired} placeholder="Describe how you are feeling..." placeholderTextColor="#929993" returnKeyType="send" style={styles.chatInput} /><Pressable disabled={sending || conclusionRequired} onPress={send} style={[styles.chatSend, (sending || conclusionRequired) && styles.chatSendDisabled]}><Text style={styles.chatSendText}>➤</Text></Pressable></View></KeyboardAvoidingView></SafeAreaView>;
+  function retry() {
+    if (conclusionRequired) { requestReply(messages, true); return; }
+    if (complaintFollowUpCount < 3) { requestReply(messages, false, 'complaint'); return; }
+    const requiredDomain = currentHealthDomains[domainQuestionIndex];
+    if (requiredDomain) requestReply(messages, false, 'domain', requiredDomain);
+  }
+  return <SafeAreaView style={styles.currentHealthChatSafe}><StatusBar style="light" /><KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={0}><View style={styles.currentHealthChatHeader}><BackButton onPress={onBack} light /><View style={styles.currentHealthChatHeading}><Text style={styles.aiTitle}>Current Health Assessment</Text><Text style={styles.aiSubtitle}>A conversational Vikriti assessment</Text></View></View><ScrollView ref={scrollRef} style={styles.flex} contentContainerStyle={styles.chatMessages} keyboardShouldPersistTaps="handled" onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}>{messages.map((message, index) => <View key={index} style={[styles.chatBubble, message.role === 'user' ? styles.userBubble : styles.assistantBubble]}><Text style={[styles.chatText, message.role === 'user' && styles.userChatText]}>{message.content}</Text></View>)}{sending ? <View style={[styles.chatBubble, styles.assistantBubble]}><ActivityIndicator color="#075A3F" /></View> : null}{error ? <View style={styles.chatErrorCard}><Text style={styles.error}>{error}</Text><Pressable onPress={retry}><Text style={styles.chatRetry}>Try again</Text></Pressable></View> : null}</ScrollView><View style={styles.chatComposer}><TextInput value={input} onChangeText={setInput} onSubmitEditing={send} editable={!sending && !conclusionRequired} placeholder="Describe how you are feeling..." placeholderTextColor="#929993" returnKeyType="send" style={styles.chatInput} /><Pressable disabled={sending || conclusionRequired} onPress={send} style={[styles.chatSend, (sending || conclusionRequired) && styles.chatSendDisabled]}><Text style={styles.chatSendText}>➤</Text></Pressable></View></KeyboardAvoidingView></SafeAreaView>;
 }
 
 function CurrentHealthSummary({ symptoms, onContinue }: { symptoms: string[]; onContinue: () => void }) {

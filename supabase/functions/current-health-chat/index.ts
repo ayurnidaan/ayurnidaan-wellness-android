@@ -6,14 +6,31 @@ const corsHeaders = {
 };
 const isSafetyClassifierReply = (content: string) =>
   content.replace(/[^a-z]+/gi, " ").trim().toLowerCase() === "user safety safe response safety safe";
+const assessmentDomains = ["hunger", "thirst", "sleep", "stool", "urine", "sweat"] as const;
+type AssessmentDomain = typeof assessmentDomains[number];
+const domainKeywords: Record<AssessmentDomain, RegExp> = {
+  hunger: /\b(hunger|hungry|appetite)\b/i,
+  thirst: /\b(thirst|thirsty|water|fluids?)\b/i,
+  sleep: /\b(sleep|sleeping|wake|waking|rest)\b/i,
+  stool: /\b(stool|bowel|constipation|diarrh(?:ea|oea)|motion)\b/i,
+  urine: /\b(urine|urinary|urinate|urination)\b/i,
+  sweat: /\b(sweat|sweating|perspiration)\b/i,
+};
+const isQuestionReply = (content: string) => content.includes("?");
+const isDomainQuestionReply = (content: string, domain: AssessmentDomain) => isQuestionReply(content) && domainKeywords[domain].test(content);
+const isConclusionReply = (content: string) =>
+  /Your\s+(?:Vata\s*,\s*Pitta\s+and\s+Kapha|Vata\s+and\s+Pitta|Vata\s+and\s+Kapha|Pitta\s+and\s+Kapha|Vata|Pitta|Kapha)\s+doshas?\s+(?:is|are)\s+imbalanced/i.test(content) &&
+  /Symptoms\s*:\s*[^\r\n]+/i.test(content) &&
+  /Reasoning\s*:\s*[^\r\n]+/i.test(content);
 
 const assessmentPrompt = `You are an Ayurvedic diagnostic assessment assistant for Ayurnidaan.
 The user's Prakriti will be provided as context. The user will begin the conversation by describing a symptom, complaint, or health concern. Your task is to interact conversationally with the user and determine which Doshas are currently imbalanced (Vikriti): Vata, Pitta, and/or Kapha.
 Do not assume that a Dosha is imbalanced simply because it is dominant in the user's Prakriti. Focus primarily on the user's current symptoms, their qualities, patterns, and meaningful changes from their normal state.
-Start by understanding the user's initial complaint. Ask concise, focused follow-up questions that are directly relevant to the complaint and help distinguish between Vata, Pitta, and Kapha patterns.
-Ask exactly one short, focused follow-up question per response. You may ask no more than five follow-up questions in total. Avoid long or compound questions. Do not overwhelm the user with a questionnaire. Every question should have a clear purpose in determining the Dosha imbalance.
-Until the application explicitly instructs you to conclude, always respond with that one follow-up question and do not return a conclusion early. The application, not you, controls when the five follow-up questions are complete.
-As the conversation progresses, consider other relevant symptoms and domains when necessary, including hunger, thirst, sleep, stool, urine, sweat, digestion, energy, body temperature, skin, pain, and mental or emotional state.
+The application controls the assessment in two question phases. Follow the phase instruction appended to this prompt exactly.
+In the complaint phase, ask exactly one short, focused follow-up question directly relevant to the user's initial complaint. Across this phase, the application will request exactly three questions. Use each answer to make the next question more relevant and to distinguish between Vata, Pitta, and Kapha patterns.
+In the domain phase, ask exactly one short question about the single required domain named by the application. The required domains are hunger, thirst, sleep, stool, urine, and sweat. Tailor the wording to the conversation where useful, but make the named domain explicit and do not combine it with another domain.
+Until the application explicitly instructs you to conclude, return only the requested single question. Never return a conclusion early. Avoid long or compound questions and do not overwhelm the user.
+You may consider other relevant information including digestion, energy, body temperature, skin, pain, and mental or emotional state when interpreting the answers, but do not add extra questions outside the controlled phases.
 Use Ayurvedic qualities and symptom patterns to guide your questioning:
 Vata: dryness, coldness, lightness, roughness, irregularity, variability, restlessness, hardness, scantiness, bloating, gas, constipation, disturbed sleep.
 Pitta: heat, sharpness, intensity, burning, acidity, excessive hunger, excessive thirst, loose or frequent stools, sweating, heat intolerance, irritability.
@@ -21,7 +38,7 @@ Kapha: heaviness, slowness, coldness, stability, oiliness, stickiness, mucus, le
 Do not assign a Dosha based on a single symptom. Consider combinations of symptoms, their qualities, frequency, intensity, timing, and whether they represent a change from the user's baseline.
 When symptoms could indicate more than one Dosha, ask concise questions specifically designed to distinguish between them.
 Do not ask unnecessary questions. Prioritize questions that provide the most useful information for determining the current Dosha imbalance.
-The application will provide the sixth and final question exactly as "Any more complaints?" Do not ask this question yourself and never ask a seventh question. After the user answers that application-provided question, you will receive an explicit instruction to conclude. At that point, assess all information in the conversation and return only the required final conclusion.
+After the user answers the three complaint-specific questions and all six domain questions, the application will provide the final question exactly as "Any more complaints?" Do not ask this question yourself. After the user answers that application-provided question, you will receive an explicit instruction to conclude. At that point, assess all information in the conversation and return the required structured result with concise reasoning.
 The possible conclusions are:
 Vata
 Pitta
@@ -30,20 +47,24 @@ Vata and Pitta
 Vata and Kapha
 Pitta and Kapha
 Vata, Pitta and Kapha
-When the application explicitly instructs you to conclude, stop asking questions and return ONLY these two lines in exactly this format:
+When the application explicitly instructs you to conclude, stop asking questions and return ONLY these three lines in exactly this format:
 Your X doshas are imbalanced
 Symptoms: symptom 1 | symptom 2 | symptom 3
+Reasoning: one concise sentence connecting the reported symptom patterns and relevant changes from baseline to the identified Dosha qualities
 Replace X with the identified Dosha or Doshas.
 Examples:
 Your Vata dosha is imbalanced
 Symptoms: constipation | disturbed sleep | bloating
+Reasoning: The combination of dryness, irregular bowel habits, and disturbed sleep reflects a current Vata pattern beyond the user's baseline.
 
 Your Vata and Pitta doshas are imbalanced
 Symptoms: irregular appetite | acidity | irritability
+Reasoning: Irregularity suggests Vata involvement, while acidity and heat-related irritability support a concurrent Pitta imbalance.
 
 Your Vata, Pitta and Kapha doshas are imbalanced
 Symptoms: variable digestion | fatigue | disturbed sleep
-Do not add bullets, explanations, reasoning, confidence scores, qualifications, or any text beyond those two required lines.`;
+Reasoning: The reported variability, heat-related digestive changes, and heaviness show meaningful features of all three Doshas.
+Do not add bullets, confidence scores, qualifications, medical diagnoses, or any text beyond those three required lines.`;
 
 Deno.serve(async (request) => {
   if (request.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -52,6 +73,11 @@ Deno.serve(async (request) => {
     if (!authorization) return Response.json({ error: "Authentication required" }, { status: 401, headers: corsHeaders });
     const body = await request.json();
     const forceConclusion = body.forceConclusion === true;
+    const questionPhase = body.questionPhase === "domain" ? "domain" : "complaint";
+    const requiredDomain = assessmentDomains.includes(body.requiredDomain) ? body.requiredDomain as AssessmentDomain : undefined;
+    if (!forceConclusion && questionPhase === "domain" && !requiredDomain) {
+      return Response.json({ error: "A valid assessment domain is required" }, { status: 400, headers: corsHeaders });
+    }
     const messages = (Array.isArray(body.messages) ? body.messages : [])
       .filter((message) => (message?.role === "user" || message?.role === "assistant") && typeof message?.content === "string")
       .slice(-40)
@@ -77,15 +103,17 @@ Deno.serve(async (request) => {
     const [prakriti] = await prakritiResponse.json();
     if (!prakriti) return Response.json({ error: "Complete the Prakriti assessment first" }, { status: 400, headers: corsHeaders });
     const context = `The user's latest Prakriti is Vata ${prakriti.vata_percentage}%, Pitta ${prakriti.pitta_percentage}%, and Kapha ${prakriti.kapha_percentage}%.`;
-    const conclusionInstruction = forceConclusion
-      ? `The user has now answered all five model-generated follow-up questions and the application's sixth and final question, "Any more complaints?" Do not ask another question. Return ONLY the two required lines in the exact format defined above, with no other text. Include the user's key current symptoms as short phrases separated by | on the Symptoms line.`
-      : "";
+    const responseInstruction = forceConclusion
+      ? `The user has now answered all three complaint-specific follow-up questions, one question about each required domain (hunger, thirst, sleep, stool, urine, and sweat), and the application's final question, "Any more complaints?" Do not ask another question. Return ONLY the three required lines in the exact format defined above. Include the key current symptoms as short phrases separated by | and give one concise, evidence-based reasoning sentence.`
+      : questionPhase === "domain"
+        ? `DOMAIN PHASE: Ask exactly one short question specifically about ${requiredDomain}. Return only that question and make the ${requiredDomain} domain explicit.`
+        : `COMPLAINT PHASE: Ask exactly one short follow-up question directly relevant to the user's initial complaint and prior answers. Return only that question.`;
 
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
         method: "POST",
         headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", "X-OpenRouter-Title": "Ayurnidaan Current Health Assessment" },
-        body: JSON.stringify({ model, messages: [{ role: "system", content: `${assessmentPrompt}\n\n${context}${conclusionInstruction ? `\n\n${conclusionInstruction}` : ""}` }, ...messages], temperature: 0.2 }),
+        body: JSON.stringify({ model, messages: [{ role: "system", content: `${assessmentPrompt}\n\n${context}\n\n${responseInstruction}` }, ...messages], temperature: 0.2 }),
       });
       if (!response.ok) {
         const providerError = (await response.text()).slice(0, 500);
@@ -95,10 +123,15 @@ Deno.serve(async (request) => {
       }
       const data = await response.json();
       const reply = data.choices?.[0]?.message?.content?.trim() ?? "";
-      if (!isSafetyClassifierReply(reply)) return Response.json({ reply }, { headers: corsHeaders });
-      console.warn(`Rejected safety-classifier reply on attempt ${attempt + 1}`);
+      const validReply = forceConclusion
+        ? isConclusionReply(reply)
+        : questionPhase === "domain" && requiredDomain
+          ? isDomainQuestionReply(reply, requiredDomain)
+          : isQuestionReply(reply);
+      if (!isSafetyClassifierReply(reply) && validReply) return Response.json({ reply }, { headers: corsHeaders });
+      console.warn(`Rejected invalid assessment reply on attempt ${attempt + 1}`);
     }
-    throw new Error("The free AI router repeatedly selected a safety classifier. Please try again.");
+    throw new Error("The free AI model did not return the required assessment format. Please try again.");
   } catch (error) {
     console.error("Current health assessment failed", error instanceof Error ? error.message : "Unexpected error");
     return Response.json({ error: error instanceof Error ? error.message : "Unexpected error" }, { status: 500, headers: corsHeaders });
