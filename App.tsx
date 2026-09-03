@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Animated, Image, KeyboardAvoidingView, Platform, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Animated, Image, KeyboardAvoidingView, Platform, Pressable, SafeAreaView, ScrollView, StatusBar as NativeStatusBar, StyleSheet, Text, TextInput, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import * as AuthSession from 'expo-auth-session';
 import * as WebBrowser from 'expo-web-browser';
@@ -85,19 +85,23 @@ export default function App() {
   }
   async function finishSplash() { if (session) await routeUser(session); else setScreen('intro'); }
   async function authenticated(nextSession: Session) { setSession(nextSession); await routeUser(nextSession); }
-  if (screen === 'splash') return <BrandSplash onFinish={finishSplash} />;
-  if (screen === 'intro') return <IntroScreen onContinue={() => setScreen('auth')} />;
-  if (screen === 'auth') return <AuthScreen onBack={() => setScreen('intro')} onAuthenticated={authenticated} />;
-  if (screen === 'account') return <AccountScreen session={session} onBack={() => setScreen('auth')} onComplete={() => setScreen('profile')} />;
-  if (screen === 'profile') return <ProfileScreen session={session} onBack={() => setScreen('account')} onComplete={() => setScreen('confirmation')} />;
-  if (screen === 'confirmation') return <ConfirmationScreen session={session} onContinue={() => setScreen('home')} />;
-  if (screen === 'prakriti') return <PrakritiAssessment session={session} onExit={() => setScreen('home')} />;
-  if (screen === 'currentHealth') return <CurrentHealthAssessment session={session} onExit={() => setScreen('home')} />;
-  if (screen === 'doctor') return <DoctorFlow session={session} onExit={() => setScreen('home')} onOpenShop={() => setScreen('shop')} onOpenProfile={() => setScreen('profileHub')} onOpenAI={() => setScreen('ai')} />;
-  if (screen === 'shop') return <ShopFlow session={session} onExit={() => setScreen('home')} onOpenDoctor={() => setScreen('doctor')} onOpenProfile={() => setScreen('profileHub')} onOpenAI={() => setScreen('ai')} />;
-  if (screen === 'profileHub') return <ProfileHub session={session} onExit={() => setScreen('home')} onOpenShop={() => setScreen('shop')} onOpenDoctor={() => setScreen('doctor')} onOpenAI={() => setScreen('ai')} onLogout={async () => { await supabase.auth.signOut(); setSession(null); setScreen('intro'); }} />;
-  if (screen === 'ai') return <AIChat onExit={() => setScreen('home')} onOpenShop={() => setScreen('shop')} onOpenDoctor={() => setScreen('doctor')} onOpenProfile={() => setScreen('profileHub')} />;
-  return <HomeScreen session={session} onStartPrakriti={() => setScreen('prakriti')} onStartCurrentHealth={() => setScreen('currentHealth')} onOpenDoctor={() => setScreen('doctor')} onOpenShop={() => setScreen('shop')} onOpenProfile={() => setScreen('profileHub')} onOpenAI={() => setScreen('ai')} />;
+  let content: React.ReactNode;
+  if (screen === 'splash') content = <BrandSplash onFinish={finishSplash} />;
+  else if (screen === 'intro') content = <IntroScreen onContinue={() => setScreen('auth')} />;
+  else if (screen === 'auth') content = <AuthScreen onBack={() => setScreen('intro')} onAuthenticated={authenticated} />;
+  else if (screen === 'account') content = <AccountScreen session={session} onBack={() => setScreen('auth')} onComplete={() => setScreen('profile')} />;
+  else if (screen === 'profile') content = <ProfileScreen session={session} onBack={() => setScreen('account')} onComplete={() => setScreen('confirmation')} />;
+  else if (screen === 'confirmation') content = <ConfirmationScreen session={session} onContinue={() => setScreen('home')} />;
+  else if (screen === 'prakriti') content = <PrakritiAssessment session={session} onExit={() => setScreen('home')} />;
+  else if (screen === 'currentHealth') content = <CurrentHealthAssessment session={session} onExit={() => setScreen('home')} />;
+  else if (screen === 'doctor') content = <DoctorFlow session={session} onExit={() => setScreen('home')} onOpenShop={() => setScreen('shop')} onOpenProfile={() => setScreen('profileHub')} onOpenAI={() => setScreen('ai')} />;
+  else if (screen === 'shop') content = <ShopFlow session={session} onExit={() => setScreen('home')} onOpenDoctor={() => setScreen('doctor')} onOpenProfile={() => setScreen('profileHub')} onOpenAI={() => setScreen('ai')} />;
+  else if (screen === 'profileHub') content = <ProfileHub session={session} onExit={() => setScreen('home')} onOpenShop={() => setScreen('shop')} onOpenDoctor={() => setScreen('doctor')} onOpenAI={() => setScreen('ai')} onLogout={async () => { await supabase.auth.signOut(); setSession(null); setScreen('intro'); }} />;
+  else if (screen === 'ai') content = <AIChat onExit={() => setScreen('home')} onOpenShop={() => setScreen('shop')} onOpenDoctor={() => setScreen('doctor')} onOpenProfile={() => setScreen('profileHub')} />;
+  else content = <HomeScreen session={session} onStartPrakriti={() => setScreen('prakriti')} onStartCurrentHealth={() => setScreen('currentHealth')} onOpenDoctor={() => setScreen('doctor')} onOpenShop={() => setScreen('shop')} onOpenProfile={() => setScreen('profileHub')} onOpenAI={() => setScreen('ai')} />;
+
+  const darkStatusBarBackground = screen === 'splash' || screen === 'confirmation' || screen === 'home' || screen === 'currentHealth' || screen === 'ai';
+  return <View style={[styles.appViewport, darkStatusBarBackground ? styles.appViewportDark : styles.appViewportLight]}>{content}</View>;
 }
 
 function BrandSplash({ onFinish }: { onFinish: () => void }) {
@@ -910,6 +914,7 @@ function extractAuthParams(url: string) { const fragment = url.split('#')[1] ?? 
 
 const serif = Platform.select({ ios: 'Georgia', android: 'serif' });
 const styles = StyleSheet.create({
+  appViewport: { flex: 1, paddingTop: Platform.OS === 'android' ? NativeStatusBar.currentHeight ?? 0 : 0 }, appViewportDark: { backgroundColor: '#104F39' }, appViewportLight: { backgroundColor: '#F7F4EB' },
   flex: { flex: 1 }, safe: { backgroundColor: '#F7F4EB', flex: 1 }, scroll: { flexGrow: 1 }, content: { flex: 1, justifyContent: 'center', paddingHorizontal: 22, paddingVertical: 27 }, contentTop: { justifyContent: 'flex-start', paddingTop: 18 },
   splash: { alignItems: 'center', backgroundColor: '#104F39', flex: 1, justifyContent: 'center', overflow: 'hidden' }, splashContent: { alignItems: 'center', flex: 1, justifyContent: 'center', paddingHorizontal: 28, width: '100%' }, splashLogoPanel: { alignItems: 'center', backgroundColor: '#FBFAF5', borderRadius: 113, height: 226, justifyContent: 'center', marginBottom: 26, width: 226 }, splashLogo: { height: 126, width: 195 }, splashSubtitle: { color: '#F5EAC7', fontSize: 14, fontWeight: '500', lineHeight: 21, textAlign: 'center' }, splashTap: { bottom: 18, color: '#93AA9F', fontSize: 11, position: 'absolute' }, splashCircleTop: { backgroundColor: '#326146', borderRadius: 92, height: 184, opacity: .38, position: 'absolute', right: -72, top: 66, width: 184 }, splashCircleBottom: { backgroundColor: '#326146', borderRadius: 92, bottom: -42, height: 184, left: -54, opacity: .38, position: 'absolute', width: 184 },
   corner: { bottom: -12, height: 185, left: -20, opacity: .6, position: 'absolute', width: 150 }, cornerStem: { backgroundColor: '#B59D54', bottom: 0, height: 170, left: 48, position: 'absolute', transform: [{ rotate: '35deg' }], width: 3 }, cornerLeaf: { backgroundColor: '#C1A95E', borderBottomLeftRadius: 20, borderTopRightRadius: 20, height: 44, position: 'absolute', width: 24 }, cornerLeaf1: { bottom: 36, left: 30, transform: [{ rotate: '-30deg' }] }, cornerLeaf2: { bottom: 76, left: 62, transform: [{ rotate: '48deg' }] }, cornerLeaf3: { bottom: 112, left: 73, transform: [{ rotate: '70deg' }] },
