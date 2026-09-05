@@ -40,6 +40,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     package: isDevelopment
       ? 'com.ayurnidaan.wellness.dev'
       : 'com.ayurnidaan.wellness',
+    softwareKeyboardLayoutMode: 'resize',
     adaptiveIcon: {
       backgroundColor: '#E6F4FE',
       foregroundImage: './assets/android-icon-foreground.png',

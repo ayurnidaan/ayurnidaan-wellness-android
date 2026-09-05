@@ -1,0 +1,17 @@
+env: load .env.local
+env: export EXPO_PUBLIC_APP_ENV EXPO_PUBLIC_SUPABASE_ANON_KEY EXPO_PUBLIC_SUPABASE_URL
+Starting project at C:\Users\SANKALP\OneDrive\Desktop\app-build
+Starting Metro Bundler
+
+Error: listen EADDRINUSE: address already in use :::8081
+Error: listen EADDRINUSE: address already in use :::8081
+    at Server.setupListenHandle [as _listen2] (node:net:1937:16)
+    at listenInCluster (node:net:1994:12)
+    at Server.listen (node:net:2099:7)
+    at C:\Users\SANKALP\OneDrive\Desktop\app-build\node_modules\expo\node_modules\@expo\cli\build\src\start\server\metro\runServer-fork.js:144:20
+    at new Promise (<anonymous>)
+    at runServer (C:\Users\SANKALP\OneDrive\Desktop\app-build\node_modules\expo\node_modules\@expo\cli\build\src\start\server\metro\runServer-fork.js:140:12)
+    at runNextTicks (node:internal/process/task_queues:65:5)
+    at process.processTimers (node:internal/timers:526:9)
+    at async replaceMetroFileMap (C:\Users\SANKALP\OneDrive\Desktop\app-build\node_modules\expo\node_modules\@expo\cli\build\src\start\server\metro\createFileMap-fork.js:191:20)
+    at async instantiateMetroAsync (C:\Users\SANKALP\OneDrive\Desktop\app-build\node_modules\expo\node_modules\@expo\cli\build\src\start\server\metro\instantiateMetro.js:401:51)

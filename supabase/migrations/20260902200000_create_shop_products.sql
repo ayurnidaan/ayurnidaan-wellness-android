@@ -15,16 +15,12 @@ create table public.shop_products (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
-
 alter table public.shop_products enable row level security;
-
 revoke all on table public.shop_products from anon, authenticated;
 grant select on table public.shop_products to authenticated;
-
 create policy "Authenticated users can browse active shop products"
 on public.shop_products for select to authenticated
 using (active = true);
-
 insert into public.shop_products
   (id, name, weight, price, mrp, icon, categories, tags, description, rating, rating_count, sort_order)
 values

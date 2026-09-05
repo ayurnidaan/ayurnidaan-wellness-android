@@ -1,4 +1,5 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { gunaPrompt, gunaSchema, validGunaResult, scoreGunas } from './guna.ts';
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -6,65 +7,112 @@ const corsHeaders = {
 };
 const isSafetyClassifierReply = (content: string) =>
   content.replace(/[^a-z]+/gi, " ").trim().toLowerCase() === "user safety safe response safety safe";
-const assessmentDomains = ["hunger", "thirst", "sleep", "stool", "urine", "sweat"] as const;
-type AssessmentDomain = typeof assessmentDomains[number];
-const domainKeywords: Record<AssessmentDomain, RegExp> = {
-  hunger: /\b(hunger|hungry|appetite)\b/i,
-  thirst: /\b(thirst|thirsty|water|fluids?)\b/i,
-  sleep: /\b(sleep|sleeping|wake|waking|rest)\b/i,
-  stool: /\b(stool|bowel|constipation|diarrh(?:ea|oea)|motion)\b/i,
-  urine: /\b(urine|urinary|urinate|urination)\b/i,
-  sweat: /\b(sweat|sweating|perspiration)\b/i,
+type QuestionPayload = { question: string; options: string[] };
+type VikritiDosha = "Vata" | "Pitta" | "Kapha";
+type DoshaFinding = { dosha: VikritiDosha; symptoms: string[]; reasoning: string };
+type ConclusionPayload = { imbalanced_doshas: DoshaFinding[] };
+const parseStructuredReply = (content: string) => {
+  try { return JSON.parse(content.replace(/^```(?:json)?\s*|\s*```$/gi, "").trim()); } catch { return null; }
 };
-const isQuestionReply = (content: string) => content.includes("?");
-const isDomainQuestionReply = (content: string, domain: AssessmentDomain) => isQuestionReply(content) && domainKeywords[domain].test(content);
-const isConclusionReply = (content: string) =>
-  /Your\s+(?:Vata\s*,\s*Pitta\s+and\s+Kapha|Vata\s+and\s+Pitta|Vata\s+and\s+Kapha|Pitta\s+and\s+Kapha|Vata|Pitta|Kapha)\s+doshas?\s+(?:is|are)\s+imbalanced/i.test(content) &&
-  /Symptoms\s*:\s*[^\r\n]+/i.test(content) &&
-  /Reasoning\s*:\s*[^\r\n]+/i.test(content);
+const isQuestionPayload = (value: unknown): value is QuestionPayload => {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.question === "string" && candidate.question.trim().length > 0 &&
+    Array.isArray(candidate.options) && candidate.options.length >= 2 && candidate.options.length <= 3 &&
+    candidate.options.every((option) => typeof option === "string" && option.trim().length > 0) &&
+    new Set(candidate.options.map((option) => String(option).trim().toLowerCase())).size === candidate.options.length;
+};
+const normalizeQuestion = (question: string) => `${question.trim().replace(/[.!?]+$/, "")}?`;
+const isConclusionPayload = (value: unknown): value is ConclusionPayload => {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Record<string, unknown>;
+  const findings = candidate.imbalanced_doshas;
+  if (!Array.isArray(findings) || findings.length > 3) return false;
+  const valid = findings.every((finding) => {
+    if (!finding || typeof finding !== "object") return false;
+    const item = finding as Record<string, unknown>;
+    return (item.dosha === "Vata" || item.dosha === "Pitta" || item.dosha === "Kapha") &&
+      Array.isArray(item.symptoms) && item.symptoms.length > 0 &&
+      item.symptoms.every((symptom) => typeof symptom === "string" && symptom.trim().length > 0) &&
+      typeof item.reasoning === "string" && item.reasoning.trim().length > 0;
+  });
+  return valid && new Set(findings.map((finding) => (finding as DoshaFinding).dosha)).size === findings.length;
+};
 
-const assessmentPrompt = `You are an Ayurvedic diagnostic assessment assistant for Ayurnidaan.
-The user's Prakriti will be provided as context. The user will begin the conversation by describing a symptom, complaint, or health concern. Your task is to interact conversationally with the user and determine which Doshas are currently imbalanced (Vikriti): Vata, Pitta, and/or Kapha.
-Do not assume that a Dosha is imbalanced simply because it is dominant in the user's Prakriti. Focus primarily on the user's current symptoms, their qualities, patterns, and meaningful changes from their normal state.
-The application controls the assessment in two question phases. Follow the phase instruction appended to this prompt exactly.
-In the complaint phase, ask exactly one short, focused follow-up question directly relevant to the user's initial complaint. Across this phase, the application will request exactly three questions. Use each answer to make the next question more relevant and to distinguish between Vata, Pitta, and Kapha patterns.
-In the domain phase, ask exactly one short question about the single required domain named by the application. The required domains are hunger, thirst, sleep, stool, urine, and sweat. Tailor the wording to the conversation where useful, but make the named domain explicit and do not combine it with another domain.
-Until the application explicitly instructs you to conclude, return only the requested single question. Never return a conclusion early. Avoid long or compound questions and do not overwhelm the user.
-You may consider other relevant information including digestion, energy, body temperature, skin, pain, and mental or emotional state when interpreting the answers, but do not add extra questions outside the controlled phases.
-Use Ayurvedic qualities and symptom patterns to guide your questioning:
-Vata: dryness, coldness, lightness, roughness, irregularity, variability, restlessness, hardness, scantiness, bloating, gas, constipation, disturbed sleep.
-Pitta: heat, sharpness, intensity, burning, acidity, excessive hunger, excessive thirst, loose or frequent stools, sweating, heat intolerance, irritability.
-Kapha: heaviness, slowness, coldness, stability, oiliness, stickiness, mucus, lethargy, excessive sleep, reduced appetite, slow digestion.
-Do not assign a Dosha based on a single symptom. Consider combinations of symptoms, their qualities, frequency, intensity, timing, and whether they represent a change from the user's baseline.
-When symptoms could indicate more than one Dosha, ask concise questions specifically designed to distinguish between them.
-Do not ask unnecessary questions. Prioritize questions that provide the most useful information for determining the current Dosha imbalance.
-After the user answers the three complaint-specific questions and all six domain questions, the application will provide the final question exactly as "Any more complaints?" Do not ask this question yourself. After the user answers that application-provided question, you will receive an explicit instruction to conclude. At that point, assess all information in the conversation and return the required structured result with concise reasoning.
-The possible conclusions are:
-Vata
-Pitta
-Kapha
-Vata and Pitta
-Vata and Kapha
-Pitta and Kapha
-Vata, Pitta and Kapha
-When the application explicitly instructs you to conclude, stop asking questions and return ONLY these three lines in exactly this format:
-Your X doshas are imbalanced
-Symptoms: symptom 1 | symptom 2 | symptom 3
-Reasoning: one concise sentence connecting the reported symptom patterns and relevant changes from baseline to the identified Dosha qualities
-Replace X with the identified Dosha or Doshas.
-Examples:
-Your Vata dosha is imbalanced
-Symptoms: constipation | disturbed sleep | bloating
-Reasoning: The combination of dryness, irregular bowel habits, and disturbed sleep reflects a current Vata pattern beyond the user's baseline.
+const buildFollowUpPrompt = (prakriti: string, previousQuestion: string, patientResponse: string, chatHistory: string) => `You are assisting in a clinical assessment of an individual's Vikruti (current Dosha imbalance).
 
-Your Vata and Pitta doshas are imbalanced
-Symptoms: irregular appetite | acidity | irritability
-Reasoning: Irregularity suggests Vata involvement, while acidity and heat-related irritability support a concurrent Pitta imbalance.
+Your task is ONLY to generate the next relevant follow-up question based on the patient's latest response.
 
-Your Vata, Pitta and Kapha doshas are imbalanced
-Symptoms: variable digestion | fatigue | disturbed sleep
-Reasoning: The reported variability, heat-related digestive changes, and heaviness show meaningful features of all three Doshas.
-Do not add bullets, confidence scores, qualifications, medical diagnoses, or any text beyond those three required lines.`;
+Assessment context:
+
+- Intention: Assess the individual's Vikruti.
+- Prakriti: ${prakriti}
+${chatHistory ? `- Opening complaint conversation so far:\n  ${chatHistory}\n` : ""}- Previous question: ${previousQuestion}
+- Patient's response: ${patientResponse}
+
+Instructions:
+
+1. Ask exactly ONE concise follow-up question.
+2. The question should clarify or expand upon the patient's latest response.
+3. Focus only on information relevant to assessing the individual's current state.
+4. Do not diagnose or state which Dosha is involved.
+5. Do not explain the reasoning behind the question.
+6. Do not repeat information already provided by the patient.
+7. Provide 3 concise answer options that are appropriate for the question.
+8. Options should be mutually distinguishable and easy for the patient to understand.
+9. Do not make the options explicitly mention Vata, Pitta, or Kapha.
+10. If the patient's response does not require meaningful clarification, ask the most clinically relevant question related to the response.
+
+Output ONLY valid JSON in this format:
+
+{
+"question": "Your follow-up question",
+"options": [
+"Option 1",
+"Option 2",
+"Option 3"
+]
+}`;
+
+const buildFinalPrompt = (prakriti: string, chatHistory: string) => `You are assisting in the clinical assessment of an individual's Vikruti (current Dosha imbalance).
+
+Your task is to assess the patient's current state using their Prakriti and the complete assessment conversation.
+
+Assessment context:
+
+- Intention: Assess the individual's Vikruti.
+- Prakriti: ${prakriti}
+- Complete assessment conversation:
+  ${chatHistory}
+
+Instructions:
+
+1. Analyze the patient's symptoms and responses across the assessment.
+2. Consider the individual's Prakriti when interpreting the symptoms.
+3. Identify which Dosha(s), if any, appear to be imbalanced.
+4. Base your assessment ONLY on information present in the conversation.
+5. Distinguish current symptoms from statements describing the individual's normal or longstanding baseline.
+6. Do not assume that every Dosha must be imbalanced.
+7. If the available evidence is insufficient to support a Dosha imbalance, state that clearly.
+8. Identify the specific symptoms or observations supporting each identified imbalance.
+9. Provide concise reasoning explaining how the symptoms support the assessment.
+10. Do not recommend treatment, medication, Panchakarma, diet, or lifestyle changes.
+11. Do not invent symptoms or clinical information that is not present in the conversation.
+
+Output ONLY valid JSON in this format:
+
+{
+"imbalanced_doshas": [
+{
+"dosha": "Vata",
+"symptoms": [
+"Symptom 1",
+"Symptom 2"
+],
+"reasoning": "Concise explanation of why the available evidence suggests this imbalance."
+}
+]
+}`;
 
 Deno.serve(async (request) => {
   if (request.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -72,16 +120,25 @@ Deno.serve(async (request) => {
     const authorization = request.headers.get("Authorization");
     if (!authorization) return Response.json({ error: "Authentication required" }, { status: 401, headers: corsHeaders });
     const body = await request.json();
-    const forceConclusion = body.forceConclusion === true;
-    const questionPhase = body.questionPhase === "domain" ? "domain" : "complaint";
-    const requiredDomain = assessmentDomains.includes(body.requiredDomain) ? body.requiredDomain as AssessmentDomain : undefined;
-    if (!forceConclusion && questionPhase === "domain" && !requiredDomain) {
-      return Response.json({ error: "A valid assessment domain is required" }, { status: 400, headers: corsHeaders });
+    const mode = body.mode === "final" ? "final" : "follow_up";
+    const useGunas = mode === 'final' && body.assessmentMethod === 'guna-v1';
+    const previousQuestion = typeof body.previousQuestion === "string" ? body.previousQuestion.trim().slice(0, 4000) : "";
+    const patientResponse = typeof body.patientResponse === "string" ? body.patientResponse.trim().slice(0, 4000) : "";
+    const suppliedPatient = body.patientContext && typeof body.patientContext === "object" ? body.patientContext : null;
+    const suppliedPrakriti = suppliedPatient ? ["vataPercentage", "pittaPercentage", "kaphaPercentage"].map((key) => Number(suppliedPatient[key])) : [];
+    if (suppliedPatient && (suppliedPrakriti.some((value) => !Number.isFinite(value) || value < 0 || value > 100) || suppliedPrakriti.reduce((sum, value) => sum + value, 0) !== 100)) {
+      return Response.json({ error: "Patient Prakriti percentages must be valid and total 100%" }, { status: 400, headers: corsHeaders });
+    }
+    if (mode === "follow_up" && (!previousQuestion || !patientResponse)) {
+      return Response.json({ error: "The previous question and patient response are required" }, { status: 400, headers: corsHeaders });
     }
     const messages = (Array.isArray(body.messages) ? body.messages : [])
       .filter((message) => (message?.role === "user" || message?.role === "assistant") && typeof message?.content === "string")
-      .slice(-40)
+      .slice(-100)
       .map((message) => ({ role: message.role, content: message.content.slice(0, 4000) }));
+    if (mode === "final" && !messages.length) {
+      return Response.json({ error: "The complete assessment conversation is required" }, { status: 400, headers: corsHeaders });
+    }
     const apiKey = Deno.env.get("OPENROUTER_API_KEY");
     const model = Deno.env.get("OPENROUTER_MODEL");
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
@@ -96,42 +153,112 @@ Deno.serve(async (request) => {
     const prakritiResponse = await fetch(`${supabaseUrl}/rest/v1/prakriti_assessments?select=vata_percentage,pitta_percentage,kapha_percentage&user_id=eq.${encodeURIComponent(user.id)}&order=completed_at.desc&limit=1`, {
       headers: { Authorization: authorization, apikey: anonKey },
     });
-    if (!prakritiResponse.ok) {
-      console.error("Prakriti lookup failed", prakritiResponse.status);
-      throw new Error("Could not load your Prakriti context");
-    }
-    const [prakriti] = await prakritiResponse.json();
-    if (!prakriti) return Response.json({ error: "Complete the Prakriti assessment first" }, { status: 400, headers: corsHeaders });
-    const context = `The user's latest Prakriti is Vata ${prakriti.vata_percentage}%, Pitta ${prakriti.pitta_percentage}%, and Kapha ${prakriti.kapha_percentage}%.`;
-    const responseInstruction = forceConclusion
-      ? `The user has now answered all three complaint-specific follow-up questions, one question about each required domain (hunger, thirst, sleep, stool, urine, and sweat), and the application's final question, "Any more complaints?" Do not ask another question. Return ONLY the three required lines in the exact format defined above. Include the key current symptoms as short phrases separated by | and give one concise, evidence-based reasoning sentence.`
-      : questionPhase === "domain"
-        ? `DOMAIN PHASE: Ask exactly one short question specifically about ${requiredDomain}. Return only that question and make the ${requiredDomain} domain explicit.`
-        : `COMPLAINT PHASE: Ask exactly one short follow-up question directly relevant to the user's initial complaint and prior answers. Return only that question.`;
+    const [prakriti] = prakritiResponse.ok ? await prakritiResponse.json() : [];
+    const prakritiDescription = suppliedPatient
+      ? `Vata ${suppliedPrakriti[0]}%, Pitta ${suppliedPrakriti[1]}%, Kapha ${suppliedPrakriti[2]}%`
+      : prakriti
+        ? `Vata ${prakriti.vata_percentage}%, Pitta ${prakriti.pitta_percentage}%, Kapha ${prakriti.kapha_percentage}%`
+        : "Not available";
+    const optionalDetails = suppliedPatient ? [
+      suppliedPatient.age !== null && suppliedPatient.age !== "" && Number.isFinite(Number(suppliedPatient.age)) ? `age ${Number(suppliedPatient.age)}` : null,
+      ["male", "female", "other"].includes(suppliedPatient.gender) ? `gender ${suppliedPatient.gender}` : null,
+      suppliedPatient.heightCm !== null && suppliedPatient.heightCm !== "" && Number.isFinite(Number(suppliedPatient.heightCm)) ? `height ${Number(suppliedPatient.heightCm)} cm` : null,
+      suppliedPatient.weightKg !== null && suppliedPatient.weightKg !== "" && Number.isFinite(Number(suppliedPatient.weightKg)) ? `weight ${Number(suppliedPatient.weightKg)} kg` : null,
+    ].filter(Boolean) : [];
+    const prakritiContext = `${prakritiDescription}${optionalDetails.length ? `; patient details: ${optionalDetails.join(", ")}` : ""}`;
+    const chatHistory = messages.map((message) => `${message.role === "assistant" ? "Assessment" : "Patient"}: ${message.content}`).join("\n  ");
+    const prompt = mode === "final"
+      ? (useGunas ? gunaPrompt(prakritiContext, chatHistory) : buildFinalPrompt(prakritiContext, chatHistory))
+      : buildFollowUpPrompt(prakritiContext, previousQuestion, patientResponse, chatHistory);
+
+    const responseFormat = mode === "final"
+      ? {
+          type: "json_schema",
+          json_schema: {
+            name: "ayurnidaan_vikriti_conclusion",
+            strict: true,
+            schema: {
+              type: "object",
+              properties: {
+                imbalanced_doshas: {
+                  type: "array",
+                  maxItems: 3,
+                  items: {
+                    type: "object",
+                    properties: {
+                      dosha: { type: "string", enum: ["Vata", "Pitta", "Kapha"] },
+                      symptoms: { type: "array", minItems: 1, items: { type: "string" } },
+                      reasoning: { type: "string" },
+                    },
+                    required: ["dosha", "symptoms", "reasoning"],
+                    additionalProperties: false,
+                  },
+                },
+              },
+              required: ["imbalanced_doshas"],
+              additionalProperties: false,
+            },
+          },
+        }
+      : {
+          type: "json_schema",
+          json_schema: {
+            name: "ayurnidaan_assessment_question",
+            strict: true,
+            schema: {
+              type: "object",
+              properties: {
+                question: { type: "string", description: "Exactly one concise assessment question." },
+                options: { type: "array", minItems: 3, maxItems: 3, description: "Exactly three concise, distinct answer options.", items: { type: "string" } },
+              },
+              required: ["question", "options"],
+              additionalProperties: false,
+            },
+          },
+        };
 
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
         method: "POST",
         headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", "X-OpenRouter-Title": "Ayurnidaan Current Health Assessment" },
-        body: JSON.stringify({ model, messages: [{ role: "system", content: `${assessmentPrompt}\n\n${context}\n\n${responseInstruction}` }, ...messages], temperature: 0.2 }),
+        body: JSON.stringify({
+          model,
+          messages: [{ role: "system", content: prompt }],
+          response_format: useGunas ? gunaSchema : responseFormat,
+          plugins: [{ id: "response-healing" }],
+        }),
       });
       if (!response.ok) {
         const providerError = (await response.text()).slice(0, 500);
         console.error("OpenRouter request failed", response.status, providerError);
-        if (response.status === 429) throw new Error("The free AI model is temporarily rate-limited. Please try again shortly.");
+        if (response.status === 429) throw new Error("The AI model is temporarily rate-limited. Please try again shortly.");
         throw new Error(`The assessment AI is temporarily unavailable (${response.status}). Please try again.`);
       }
       const data = await response.json();
-      const reply = data.choices?.[0]?.message?.content?.trim() ?? "";
-      const validReply = forceConclusion
-        ? isConclusionReply(reply)
-        : questionPhase === "domain" && requiredDomain
-          ? isDomainQuestionReply(reply, requiredDomain)
-          : isQuestionReply(reply);
-      if (!isSafetyClassifierReply(reply) && validReply) return Response.json({ reply }, { headers: corsHeaders });
+      const rawReply = data.choices?.[0]?.message?.content?.trim() ?? "";
+      const parsedReply = parseStructuredReply(rawReply);
+      const validReply = mode === "final"
+        ? (useGunas ? validGunaResult(parsedReply) : isConclusionPayload(parsedReply))
+        : isQuestionPayload(parsedReply);
+      if (!isSafetyClassifierReply(rawReply) && validReply) {
+        if (mode === "final") {
+          if (useGunas && validGunaResult(parsedReply)) return Response.json({ assessment: scoreGunas(parsedReply) }, { headers: corsHeaders });
+          const conclusion = parsedReply as ConclusionPayload;
+          const sanitized = {
+            imbalanced_doshas: conclusion.imbalanced_doshas.map((finding) => ({
+              dosha: finding.dosha,
+              symptoms: finding.symptoms.map((symptom) => symptom.replace(/[|\r\n]+/g, " ").replace(/\s+/g, " ").trim()),
+              reasoning: finding.reasoning.replace(/\s+/g, " ").trim(),
+            })),
+          };
+          return Response.json({ assessment: sanitized }, { headers: corsHeaders });
+        }
+        const question = parsedReply as QuestionPayload;
+        return Response.json({ reply: normalizeQuestion(question.question), options: question.options.map((option) => option.trim()) }, { headers: corsHeaders });
+      }
       console.warn(`Rejected invalid assessment reply on attempt ${attempt + 1}`);
     }
-    throw new Error("The free AI model did not return the required assessment format. Please try again.");
+    throw new Error("The AI model did not return the required assessment format. Please try again.");
   } catch (error) {
     console.error("Current health assessment failed", error instanceof Error ? error.message : "Unexpected error");
     return Response.json({ error: error instanceof Error ? error.message : "Unexpected error" }, { status: 500, headers: corsHeaders });

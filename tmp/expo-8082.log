@@ -1,0 +1,15 @@
+Starting project at C:\Users\SANKALP\OneDrive\Desktop\doctor-app
+Starting Metro Bundler
+
+Error: listen EADDRINUSE: address already in use :::8082
+Error: listen EADDRINUSE: address already in use :::8082
+    at Server.setupListenHandle [as _listen2] (node:net:1937:16)
+    at listenInCluster (node:net:1994:12)
+    at Server.listen (node:net:2099:7)
+    at C:\Users\SANKALP\OneDrive\Desktop\doctor-app\node_modules\expo\node_modules\@expo\cli\build\src\start\server\metro\runServer-fork.js:144:20
+    at new Promise (<anonymous>)
+    at runServer (C:\Users\SANKALP\OneDrive\Desktop\doctor-app\node_modules\expo\node_modules\@expo\cli\build\src\start\server\metro\runServer-fork.js:140:12)
+    at async replaceMetroFileMap (C:\Users\SANKALP\OneDrive\Desktop\doctor-app\node_modules\expo\node_modules\@expo\cli\build\src\start\server\metro\createFileMap-fork.js:191:20)
+    at async instantiateMetroAsync (C:\Users\SANKALP\OneDrive\Desktop\doctor-app\node_modules\expo\node_modules\@expo\cli\build\src\start\server\metro\instantiateMetro.js:401:51)
+    at async MetroBundlerDevServer.startImplementationAsync (C:\Users\SANKALP\OneDrive\Desktop\doctor-app\node_modules\expo\node_modules\@expo\cli\build\src\start\server\metro\MetroBundlerDevServer.js:930:82)
+    at async MetroBundlerDevServer.startAsync (C:\Users\SANKALP\OneDrive\Desktop\doctor-app\node_modules\expo\node_modules\@expo\cli\build\src\start\server\BundlerDevServer.js:124:24)

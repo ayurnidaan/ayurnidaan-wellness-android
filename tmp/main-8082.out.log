@@ -1,0 +1,4 @@
+env: load .env.local
+env: export EXPO_PUBLIC_APP_ENV EXPO_PUBLIC_SUPABASE_ANON_KEY EXPO_PUBLIC_SUPABASE_URL
+Starting project at C:\Users\SANKALP\OneDrive\Desktop\app-build
+Metro is running in CI mode, reloads are disabled. Remove CI=true to enable watch mode.
