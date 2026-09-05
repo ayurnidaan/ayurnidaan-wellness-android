@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Animated, Dimensions, Image, KeyboardAvoidingView, Platform, Pressable, SafeAreaView, ScrollView, StatusBar as NativeStatusBar, StyleSheet, Text, TextInput, View, type ImageSourcePropType, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native';
+import { ActivityIndicator, Animated, Dimensions, Image, KeyboardAvoidingView, Modal, Platform, Pressable, SafeAreaView, ScrollView, StatusBar as NativeStatusBar, StyleSheet, Text, TextInput, View, type ImageSourcePropType, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import * as AuthSession from 'expo-auth-session';
 import * as WebBrowser from 'expo-web-browser';
 import * as ImagePicker from 'expo-image-picker';
-import * as DocumentPicker from 'expo-document-picker';
 import { FunctionsHttpError, type Session } from '@supabase/supabase-js';
 import { supabase } from './src/lib/supabase';
 import { colors } from './src/theme';
@@ -250,24 +249,26 @@ function ValidationAccountScreen({ session, onBack, onComplete }: { session: Ses
 }
 
 function ProfileScreen({ session, onBack, onComplete }: { session: Session | null; onBack: () => void; onComplete: () => void }) {
-  const [dob, setDob] = useState(''); const [sex, setSex] = useState<'male' | 'female' | null>(null);
+  const [dob, setDob] = useState<Date | null>(null); const [showDobPicker, setShowDobPicker] = useState(false);
+  const [sex, setSex] = useState<'male' | 'female' | null>(null);
   const [height, setHeight] = useState(''); const [weight, setWeight] = useState('');
   const [loading, setLoading] = useState(false); const [error, setError] = useState('');
   async function save() {
     if (!session?.user.id) return setError('Please sign in again.');
-    const normalizedDob = normalizeDateOfBirth(dob);
-    if (!normalizedDob || !sex || !Number(height) || !Number(weight)) return setError('Complete every field. Use DD/MM/YYYY for date of birth.');
+    const normalizedDob = dob ? localDateKey(dob) : null;
+    if (!normalizedDob || !sex || !Number(height) || !Number(weight)) return setError('Complete every field and select your date of birth.');
     setLoading(true); setError('');
     const { error: saveError } = await supabase.from('profiles').upsert({ user_id: session.user.id, full_name: session.user.user_metadata.full_name ?? null, date_of_birth: normalizedDob, sex, height_cm: Number(height), weight_kg: Number(weight) });
     setLoading(false); if (saveError) return setError(saveError.message); onComplete();
   }
   return <ScreenFrame scroll alignTop>
     <OnboardingProgress step={2} onBack={onBack} /><Text style={styles.pageTitle}>Basic profile</Text><Text style={styles.pageSubtitle}>A few details so guidance fits you.</Text>
-    <View style={styles.form}><Field label="DATE OF BIRTH" value={dob} onChangeText={setDob} placeholder="DD / MM / YYYY" keyboardType="number-pad" onboarding />
+    <View style={styles.form}><View><Text style={styles.onboardingLabel}>DATE OF BIRTH</Text><Pressable accessibilityLabel="Select date of birth" accessibilityRole="button" onPress={() => setShowDobPicker(true)} style={styles.dobInput}><Text style={[styles.dobInputText, !dob && styles.dobPlaceholder]}>{dob ? formatDateOfBirth(dob) : 'DD / MM / YYYY'}</Text><Text style={styles.dobCalendarIcon}>▦</Text></Pressable></View>
       <Text style={styles.onboardingLabel}>SEX</Text><View style={styles.choiceRow}>{(['male', 'female'] as const).map(value => <Pressable key={value} onPress={() => setSex(value)} style={[styles.choice, sex === value && styles.choiceSelected]}><Text style={[styles.choiceText, sex === value && styles.choiceTextSelected]}>{value === 'male' ? 'Male' : 'Female'}</Text></Pressable>)}</View>
       <View style={styles.measureRow}><View style={styles.measureField}><Field label="HEIGHT  ·  CM" value={height} onChangeText={setHeight} placeholder="175" keyboardType="decimal-pad" onboarding /></View><View style={styles.measureField}><Field label="WEIGHT  ·  KG" value={weight} onChangeText={setWeight} placeholder="70" keyboardType="decimal-pad" onboarding /></View></View>
       <PrimaryButton label="Continue" loading={loading} onPress={save} onboarding /><Text style={styles.privacy}>Your health information is private and protected.</Text>{error ? <Text style={styles.error}>{error}</Text> : null}
     </View>
+    <DateOfBirthCalendar onClose={() => setShowDobPicker(false)} onSelect={(value) => { setDob(value); setShowDobPicker(false); }} value={dob} visible={showDobPicker} />
   </ScreenFrame>;
 }
 
@@ -517,6 +518,31 @@ function CurrentHealthAssessment({ session, onExit, onReturnToStart }: { session
   const [stage, setStage] = useState<'intro' | 'patient' | 'chat' | 'ready' | 'result'>(validationMode === 'vikriti' ? 'patient' : 'intro');
   const [validationResult, setValidationResult] = useState<VikritiAssessmentResult | null>(null);
   const [patientContext, setPatientContext] = useState<PatientContext | null>(null);
+  const [contextLoading, setContextLoading] = useState(validationMode !== 'vikriti');
+  const [contextError, setContextError] = useState('');
+  async function loadAppPatientContext() {
+    if (validationMode === 'vikriti') return;
+    if (!session?.user.id) { setContextLoading(false); setContextError('Please sign in again before starting the assessment.'); return; }
+    setContextLoading(true); setContextError('');
+    const [profileResult, prakritiResult] = await Promise.all([
+      supabase.from('profiles').select('date_of_birth, sex, height_cm, weight_kg').eq('user_id', session.user.id).maybeSingle(),
+      supabase.from('prakriti_assessments').select('vata_percentage, pitta_percentage, kapha_percentage').eq('user_id', session.user.id).order('completed_at', { ascending: false }).limit(1).maybeSingle(),
+    ]);
+    setContextLoading(false);
+    if (profileResult.error || prakritiResult.error) { setContextError(profileResult.error?.message || prakritiResult.error?.message || 'Could not load your assessment profile.'); return; }
+    if (!prakritiResult.data) { setContextError('Complete your Prakriti assessment before starting the current health assessment.'); return; }
+    const profile = profileResult.data;
+    setPatientContext({
+      vataPercentage: Number(prakritiResult.data.vata_percentage),
+      pittaPercentage: Number(prakritiResult.data.pitta_percentage),
+      kaphaPercentage: Number(prakritiResult.data.kapha_percentage),
+      age: profile?.date_of_birth ? ageFromDateOfBirth(profile.date_of_birth) : null,
+      gender: profile?.sex === 'male' || profile?.sex === 'female' ? profile.sex : null,
+      heightCm: profile?.height_cm == null ? null : Number(profile.height_cm),
+      weightKg: profile?.weight_kg == null ? null : Number(profile.weight_kg),
+    });
+  }
+  useEffect(() => { if (validationMode !== 'vikriti') void loadAppPatientContext(); }, [session?.user.id]);
   if (stage === 'intro') return <SafeAreaView style={styles.assessmentSafe}>
     <StatusBar style="dark" />
     <View style={styles.assessmentIntroPage}>
@@ -531,7 +557,7 @@ function CurrentHealthAssessment({ session, onExit, onReturnToStart }: { session
           <AssessmentFact icon="03" text="Medications and conditions" />
         </View>
       </View>
-      <PrimaryButton label="Start assessment" onPress={() => setStage('chat')} />
+      {contextError ? <Text style={styles.error}>{contextError}</Text> : null}<PrimaryButton label="Start assessment" loading={contextLoading} onPress={() => { if (patientContext) setStage('chat'); else void loadAppPatientContext(); }} />
     </View>
   </SafeAreaView>;
   if (stage === 'patient') return <VikritiPatientContextScreen onContinue={(context) => { setPatientContext(context); setStage('chat'); }} />;
@@ -707,7 +733,7 @@ function CurrentHealthChat({ session, patientContext, showBack = true, onBack, o
   async function requestFollowUp(request: Extract<PendingVikritiRequest, { kind: 'followUp' }>) {
     setSending(true); setError('');
     setPendingRequest(request);
-    const openingHistory = validationMode === 'vikriti' && request.nextPhase === 'complaintFollowUp' ? request.conversation : undefined;
+    const openingHistory = request.nextPhase === 'complaintFollowUp' ? request.conversation : undefined;
     const { data, error: functionError } = await supabase.functions.invoke('current-health-chat', { body: { mode: 'follow_up', previousQuestion: request.previousQuestion, patientResponse: request.patientResponse, patientContext, messages: openingHistory } });
     const reply = typeof data?.reply === 'string' ? data.reply.trim().replace(/^"|"$/g, '') : '';
     const options = Array.isArray(data?.options) ? data.options.filter((option: unknown): option is string => typeof option === 'string' && option.trim().length > 0).slice(0, 3) : [];
@@ -719,15 +745,15 @@ function CurrentHealthChat({ session, patientContext, showBack = true, onBack, o
 
   async function requestConclusion(request: Extract<PendingVikritiRequest, { kind: 'final' }>) {
     setSending(true); setError(''); setPendingRequest(request); setPhase('concluding');
-    const { data, error: functionError } = await supabase.functions.invoke('current-health-chat', { body: { mode: 'final', messages: request.conversation, patientContext, assessmentMethod: validationMode === 'vikriti' ? 'guna-v1' : undefined } });
+    const { data, error: functionError } = await supabase.functions.invoke('current-health-chat', { body: { mode: 'final', messages: request.conversation, patientContext, assessmentMethod: 'guna-v1' } });
     const findings = parseVikritiFindings(data?.assessment?.imbalanced_doshas);
     const functionMessage = await getFunctionErrorMessage(functionError, data);
     if (functionError || findings === null) { setSending(false); setError(functionMessage || functionError?.message || 'The assessment did not return a valid conclusion. Please try again.'); return; }
     const doshas = findings.map(finding => finding.dosha);
     const conclusion = getVikritiConclusion(doshas);
-    const parsedGunaRows = validationMode === 'vikriti' ? parseGunaRows(data?.assessment?.symptom_gunas) : null;
+    const parsedGunaRows = parseGunaRows(data?.assessment?.symptom_gunas);
     const gunaRows: GunaRow[] | undefined = parsedGunaRows ?? undefined;
-    if (validationMode === 'vikriti' && (!gunaRows || findings.length > 3)) { setSending(false); setError('The assessment did not return the symptom–guna mapping. Please try again.'); return; }
+    if (!gunaRows || findings.length > 3) { setSending(false); setError('The assessment did not return the symptom–guna mapping. Please try again.'); return; }
     const symptoms = gunaRows ? gunaRows.map(row => row.symptom) : [...new Set(findings.flatMap(finding => finding.symptoms))];
     const reasoning = findings.length ? findings.map(finding => `${finding.dosha}: ${finding.reasoning}`).join(' ') : 'The available evidence was insufficient to support a Dosha imbalance.';
     const resultSummary = findings.length
@@ -769,7 +795,7 @@ function CurrentHealthChat({ session, patientContext, showBack = true, onBack, o
     if (phase === 'complaintFollowUp') {
       const completedFollowUps = complaintFollowUpsAnswered + 1;
       setComplaintFollowUpsAnswered(completedFollowUps);
-      const requiredFollowUps = validationMode === 'vikriti' ? 3 : 1;
+      const requiredFollowUps = 3;
       if (completedFollowUps < requiredFollowUps) {
         const previousQuestion = messages.at(-1)?.role === 'assistant' ? messages.at(-1)!.content : currentHealthOpening;
         requestFollowUp({ kind: 'followUp', previousQuestion, patientResponse: content, conversation: next, nextPhase: 'complaintFollowUp' });
@@ -780,7 +806,7 @@ function CurrentHealthChat({ session, patientContext, showBack = true, onBack, o
       const domainQuestion = currentHealthDomainQuestions[domainQuestionIndex];
       const selectedAnswer = domainQuestion.answers.find(option => option.text.toLowerCase() === content.toLowerCase());
       setDomainAnswers(current => ({ ...current, [domainQuestion.id]: { answer_id: selectedAnswer?.id ?? 'FREE_TEXT', text: selectedAnswer?.text ?? content } }));
-      if (validationMode === 'vikriti' && (selectedAnswer?.id.endsWith('_NORMAL') || /^(normal|regular)[.!]?$/i.test(content))) {
+      if (selectedAnswer?.id.endsWith('_NORMAL') || /^(normal|regular)[.!]?$/i.test(content)) {
         const nextIndex = domainQuestionIndex + 1;
         if (nextIndex < currentHealthDomainQuestions.length) showDomainQuestion(nextIndex, next);
         else { setPhase('final'); setMessages([...next, { role: 'assistant', content: finalComplaintQuestion }]); }
@@ -1988,10 +2014,15 @@ function DoctorIntakeScreen({ session, notes, selectedTags, attachments, onNotes
   }
   async function pickReport() {
     setAttachmentError('');
-    const result = await DocumentPicker.getDocumentAsync({ type: 'application/pdf', copyToCacheDirectory: true, multiple: false });
-    if (result.canceled) return;
-    const asset = result.assets[0];
-    await uploadAttachment({ mimeType: asset.mimeType || 'application/pdf', name: asset.name, size: asset.size ?? null, type: 'report', uri: asset.uri });
+    try {
+      const DocumentPicker = await import('expo-document-picker');
+      const result = await DocumentPicker.getDocumentAsync({ type: 'application/pdf', copyToCacheDirectory: true, multiple: false });
+      if (result.canceled) return;
+      const asset = result.assets[0];
+      await uploadAttachment({ mimeType: asset.mimeType || 'application/pdf', name: asset.name, size: asset.size ?? null, type: 'report', uri: asset.uri });
+    } catch {
+      setAttachmentError('PDF selection is unavailable in this version of Expo Go. Please update Expo Go or use a development build.');
+    }
   }
   async function pickPhoto() {
     setAttachmentError('');
@@ -2059,6 +2090,33 @@ function ScreenFrame({ children, scroll = false, alignTop = false }: { children:
 function OnboardingProgress({ step, onBack }: { step: 1 | 2; onBack: () => void }) { return <View style={styles.progressHeader}><BackButton onPress={onBack} onboarding /><View style={styles.stepTracks}><View style={[styles.stepTrack, styles.stepTrackActive]} /><View style={[styles.stepTrack, step === 2 && styles.stepTrackActive]} /></View><Text style={styles.stepCount}>{step} / 2</Text></View>; }
 function BotanicalCorner() { return <View pointerEvents="none" style={styles.corner}><View style={styles.cornerStem} /><View style={[styles.cornerLeaf, styles.cornerLeaf1]} /><View style={[styles.cornerLeaf, styles.cornerLeaf2]} /><View style={[styles.cornerLeaf, styles.cornerLeaf3]} /></View>; }
 function Field({ label, onboarding = false, ...props }: React.ComponentProps<typeof TextInput> & { label: string; onboarding?: boolean }) { return <View><Text style={onboarding ? styles.onboardingLabel : styles.label}>{label}</Text><TextInput placeholderTextColor="#9A9B92" style={styles.input} {...props} /></View>; }
+function DateOfBirthCalendar({ visible, value, onClose, onSelect }: { visible: boolean; value: Date | null; onClose: () => void; onSelect: (value: Date) => void }) {
+  const [visibleMonth, setVisibleMonth] = useState(() => startOfMonth(value ?? defaultDateOfBirth()));
+  useEffect(() => { if (visible) setVisibleMonth(startOfMonth(value ?? defaultDateOfBirth())); }, [visible, value]);
+  const today = new Date();
+  const year = visibleMonth.getFullYear();
+  const month = visibleMonth.getMonth();
+  const firstWeekday = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const days = Array.from({ length: 42 }, (_, index) => { const day = index - firstWeekday + 1; return day > 0 && day <= daysInMonth ? day : null; });
+  function moveMonth(amount: number) { setVisibleMonth(current => clampCalendarMonth(new Date(current.getFullYear(), current.getMonth() + amount, 1))); }
+  function moveYear(amount: number) { setVisibleMonth(current => clampCalendarMonth(new Date(current.getFullYear() + amount, current.getMonth(), 1))); }
+  return <Modal animationType="fade" onRequestClose={onClose} statusBarTranslucent transparent visible={visible}>
+    <View style={styles.dobCalendarBackdrop}><View accessibilityViewIsModal style={styles.dobCalendarCard}>
+      <View style={styles.dobCalendarTopRow}><View><Text style={styles.dobCalendarEyebrow}>DATE OF BIRTH</Text><Text style={styles.dobCalendarTitle}>Choose a date</Text></View><Pressable accessibilityLabel="Close calendar" onPress={onClose} style={styles.dobCalendarClose}><Text style={styles.dobCalendarCloseText}>×</Text></Pressable></View>
+      <View style={styles.dobCalendarControls}><Pressable accessibilityLabel="Previous year" onPress={() => moveYear(-1)} style={styles.dobCalendarControl}><Text style={styles.dobCalendarControlText}>«</Text></Pressable><Pressable accessibilityLabel="Previous month" onPress={() => moveMonth(-1)} style={styles.dobCalendarControl}><Text style={styles.dobCalendarControlText}>‹</Text></Pressable><Text style={styles.dobCalendarMonth}>{visibleMonth.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })}</Text><Pressable accessibilityLabel="Next month" onPress={() => moveMonth(1)} style={styles.dobCalendarControl}><Text style={styles.dobCalendarControlText}>›</Text></Pressable><Pressable accessibilityLabel="Next year" onPress={() => moveYear(1)} style={styles.dobCalendarControl}><Text style={styles.dobCalendarControlText}>»</Text></Pressable></View>
+      <View style={styles.dobCalendarWeek}>{['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((label, index) => <Text key={`${label}-${index}`} style={styles.dobCalendarWeekday}>{label}</Text>)}</View>
+      <View style={styles.dobCalendarGrid}>{days.map((day, index) => {
+        if (!day) return <View key={`empty-${index}`} style={styles.dobCalendarDaySlot} />;
+        const date = new Date(year, month, day);
+        const disabled = date > today;
+        const selected = Boolean(value && localDateKey(date) === localDateKey(value));
+        return <View key={day} style={styles.dobCalendarDaySlot}><Pressable accessibilityLabel={date.toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })} accessibilityRole="button" disabled={disabled} onPress={() => onSelect(date)} style={[styles.dobCalendarDay, selected && styles.dobCalendarDaySelected]}><Text style={[styles.dobCalendarDayText, disabled && styles.dobCalendarDayDisabled, selected && styles.dobCalendarDayTextSelected]}>{day}</Text></Pressable></View>;
+      })}</View>
+      <Pressable accessibilityRole="button" onPress={onClose} style={styles.dobCalendarCancel}><Text style={styles.dobCalendarCancelText}>Cancel</Text></Pressable>
+    </View></View>
+  </Modal>;
+}
 function PrimaryButton({ label, loading, onboarding = false, onPress }: { label: string; loading?: boolean; onboarding?: boolean; onPress: () => void }) { return <Pressable disabled={loading} onPress={onPress} style={({ pressed }) => [styles.primaryButton, onboarding && styles.onboardingPrimaryButton, pressed && styles.pressed]}>{loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>{label}</Text>}</Pressable>; }
 function SecondaryButton({ label, onPress }: { label: string; onPress: () => void }) { return <Pressable onPress={onPress} style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}><Text style={styles.secondaryText}>{label}</Text></Pressable>; }
 function SocialButton({ symbol, label, loading, onPress }: { symbol: string; label: string; loading?: boolean; onPress: () => void }) { return <Pressable accessibilityLabel={`Continue with ${label}`} disabled={loading} onPress={onPress} style={({ pressed }) => [styles.socialButton, pressed && styles.pressed]}>{loading ? <ActivityIndicator color={colors.primaryDark} /> : <Text style={[styles.socialSymbol, label === 'Google' && styles.google]}>{symbol}</Text>}<Text style={styles.socialLabel}>{label}</Text></Pressable>; }
@@ -2071,6 +2129,11 @@ function FeatureTile({ icon, label }: { icon: string; label: string }) { return 
 function PlanTile({ icon, title, detail }: { icon: string; title: string; detail: string }) { return <View style={styles.planTile}><View style={styles.planTitleRow}><Text style={styles.planIcon}>{icon}</Text><Text style={styles.planTitle}>{title}</Text></View><Text style={styles.planDetail}>{detail}</Text></View>; }
 function NavItem({ label, active = false, onPress }: { icon: string; label: string; active?: boolean; onPress?: () => void }) { return <BottomBarItem label={label} active={active} onPress={onPress} />; }
 function localDateKey(value: Date) { return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`; }
+function defaultDateOfBirth() { const value = new Date(); value.setFullYear(value.getFullYear() - 25); return value; }
+function startOfMonth(value: Date) { return new Date(value.getFullYear(), value.getMonth(), 1); }
+function clampCalendarMonth(value: Date) { const earliest = new Date(1900, 0, 1); const latest = startOfMonth(new Date()); return value < earliest ? earliest : value > latest ? latest : value; }
+function formatDateOfBirth(value: Date) { return `${String(value.getDate()).padStart(2, '0')} / ${String(value.getMonth() + 1).padStart(2, '0')} / ${value.getFullYear()}`; }
+function ageFromDateOfBirth(value: string) { const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/); if (!match) return null; const birthDate = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])); const today = new Date(); let age = today.getFullYear() - birthDate.getFullYear(); if (today.getMonth() < birthDate.getMonth() || (today.getMonth() === birthDate.getMonth() && today.getDate() < birthDate.getDate())) age -= 1; return age >= 0 && age <= 120 ? age : null; }
 function normalizeDateOfBirth(value: string) { const clean = value.trim(); if (/^\d{4}-\d{2}-\d{2}$/.test(clean)) return clean; const match = clean.match(/^(\d{1,2})\s*\/\s*(\d{1,2})\s*\/\s*(\d{4})$/); if (!match) return null; const day = Number(match[1]); const month = Number(match[2]); const year = Number(match[3]); const date = new Date(year, month - 1, day); if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return null; return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`; }
 function formatAppointmentDate(value: string) { const [year, month, day] = value.split('-').map(Number); return new Date(year, month - 1, day).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }); }
 function extractAuthParams(url: string) { const fragment = url.split('#')[1] ?? url.split('?')[1] ?? ''; return Object.fromEntries(new URLSearchParams(fragment)); }
@@ -2579,6 +2642,8 @@ const styles = StyleSheet.create({
   dividerRow: { alignItems: 'center', flexDirection: 'row', gap: 12, marginVertical: 24 }, divider: { backgroundColor: '#DDD8CC', flex: 1, height: 1 }, dividerText: { color: '#8D938D', fontSize: 10 }, socialRow: { flexDirection: 'row', gap: 12, justifyContent: 'space-between' }, socialButton: { alignItems: 'center', backgroundColor: '#FFFEFC', borderColor: '#DDD8CE', borderRadius: 10, borderWidth: 1, flex: 1, height: 58, justifyContent: 'center' }, socialSymbol: { color: '#0E4C38', fontSize: 14, fontWeight: '700' }, google: { color: '#0E4C38' }, socialLabel: { color: '#53615A', fontSize: 9, marginTop: 2 },
   notice: { color: '#7A6429', fontSize: 11, lineHeight: 17, marginTop: 16, textAlign: 'center' }, error: { color: colors.error, fontSize: 12, lineHeight: 18, marginTop: 14, textAlign: 'center' }, policy: { color: '#858D87', fontSize: 9, lineHeight: 14, marginTop: 'auto', paddingTop: 48, textAlign: 'center' }, muted: { color: '#6D756F', fontSize: 12 }, link: { color: '#075A43', fontWeight: '500' }, back: { alignItems: 'center', height: 38, justifyContent: 'center', marginBottom: 8, marginLeft: -10, width: 38 }, backText: { color: '#26352F', fontSize: 31, fontWeight: '300', lineHeight: 32 }, onboardingBack: { borderColor: '#DDD8CC', borderRadius: 15, borderWidth: 1, height: 30, marginBottom: 6, marginLeft: 0, width: 30 }, onboardingBackText: { fontSize: 24, lineHeight: 25 }, progressHeader: { alignItems: 'center', flexDirection: 'row', marginBottom: 15 }, stepTracks: { flex: 1, flexDirection: 'row', gap: 5, marginLeft: 14 }, stepTrack: { backgroundColor: '#D9D6CC', flex: 1, height: 2 }, stepTrackActive: { backgroundColor: '#0C523C' }, stepCount: { color: '#7D847E', fontSize: 9, marginLeft: 12 },
   checkRow: { alignItems: 'flex-start', flexDirection: 'row', gap: 11, marginTop: 3 }, checkbox: { alignItems: 'center', borderColor: '#B9BDB5', borderRadius: 5, borderWidth: 1.3, height: 22, justifyContent: 'center', marginTop: 1, width: 22 }, checkboxSelected: { backgroundColor: '#005A3F', borderColor: '#005A3F' }, checkmark: { color: '#FFF', fontSize: 14, fontWeight: '800' }, terms: { color: '#6D756F', flex: 1, fontSize: 12, lineHeight: 19 },
+  dobInput: { alignItems: 'center', backgroundColor: '#FFFEFC', borderColor: '#D8D5CB', borderRadius: 11, borderWidth: 1, flexDirection: 'row', justifyContent: 'space-between', minHeight: 51, paddingHorizontal: 14 }, dobInputText: { color: '#202921', fontSize: 15 }, dobPlaceholder: { color: '#9A9B92' }, dobCalendarIcon: { color: '#10563F', fontSize: 21 },
+  dobCalendarBackdrop: { alignItems: 'center', backgroundColor: 'rgba(8, 28, 22, .48)', flex: 1, justifyContent: 'center', paddingHorizontal: 20 }, dobCalendarCard: { backgroundColor: '#FFFDF7', borderColor: '#DDD7CA', borderRadius: 18, borderWidth: 1, maxWidth: 390, padding: 18, width: '100%' }, dobCalendarTopRow: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' }, dobCalendarEyebrow: { color: '#A77A2F', fontSize: 8, fontWeight: '700', letterSpacing: 1.7 }, dobCalendarTitle: { color: '#17372D', fontFamily: serif, fontSize: 23, marginTop: 3 }, dobCalendarClose: { alignItems: 'center', borderColor: '#D8D5CB', borderRadius: 16, borderWidth: 1, height: 32, justifyContent: 'center', width: 32 }, dobCalendarCloseText: { color: '#385047', fontSize: 24, fontWeight: '300', lineHeight: 26 }, dobCalendarControls: { alignItems: 'center', flexDirection: 'row', marginTop: 20 }, dobCalendarControl: { alignItems: 'center', height: 36, justifyContent: 'center', width: 36 }, dobCalendarControlText: { color: '#15513E', fontSize: 22 }, dobCalendarMonth: { color: '#293D35', flex: 1, fontSize: 14, fontWeight: '700', textAlign: 'center' }, dobCalendarWeek: { flexDirection: 'row', marginTop: 12 }, dobCalendarWeekday: { color: '#8B958F', fontSize: 9, fontWeight: '700', textAlign: 'center', width: '14.2857%' }, dobCalendarGrid: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 6 }, dobCalendarDaySlot: { alignItems: 'center', aspectRatio: 1, justifyContent: 'center', width: '14.2857%' }, dobCalendarDay: { alignItems: 'center', borderRadius: 18, height: 36, justifyContent: 'center', width: 36 }, dobCalendarDaySelected: { backgroundColor: '#15513E' }, dobCalendarDayText: { color: '#34463E', fontSize: 13 }, dobCalendarDayDisabled: { color: '#C8CBC6' }, dobCalendarDayTextSelected: { color: '#FFF', fontWeight: '700' }, dobCalendarCancel: { alignItems: 'center', borderColor: '#B9C6BF', borderRadius: 10, borderWidth: 1, justifyContent: 'center', marginTop: 14, minHeight: 44 }, dobCalendarCancelText: { color: '#15513E', fontSize: 13, fontWeight: '700' },
   choiceRow: { flexDirection: 'row', gap: 9 }, choice: { alignItems: 'center', backgroundColor: '#FFFEFC', borderColor: '#D8D5CB', borderRadius: 10, borderWidth: 1, flex: 1, justifyContent: 'center', minHeight: 48 }, choiceSelected: { backgroundColor: '#10563F', borderColor: '#10563F' }, choiceText: { color: '#1D2923', fontSize: 13, fontWeight: '600' }, choiceTextSelected: { color: '#FFF' }, measureRow: { flexDirection: 'row', gap: 11 }, measureField: { flex: 1 }, privacy: { color: '#89908A', fontSize: 9, lineHeight: 15, textAlign: 'center' },
   welcomeSafe: { backgroundColor: '#104F39', flex: 1 }, confirmationContent: { alignItems: 'center', flex: 1, justifyContent: 'center', paddingBottom: 46, paddingHorizontal: 28 }, successCircle: { alignItems: 'center', borderColor: '#6E8D7F', borderRadius: 38, borderWidth: 1, height: 76, justifyContent: 'center', marginBottom: 26, width: 76 }, successCheck: { color: '#D2A33D', fontSize: 28, fontWeight: '400', lineHeight: 34 }, confirmationTitle: { color: '#FFFDF4', fontFamily: serif, fontSize: 29, fontWeight: '400', textAlign: 'center' }, confirmationCopy: { color: '#D7DFD9', fontSize: 12, lineHeight: 20, marginTop: 14, textAlign: 'center' }, confirmationAction: { bottom: 28, left: 20, position: 'absolute', right: 20 }, homeButton: { alignItems: 'center', backgroundColor: '#FBF8EF', borderRadius: 10, justifyContent: 'center', minHeight: 50 }, homeButtonText: { color: '#0D503B', fontSize: 13, fontWeight: '500' },
   assessmentSafe: { backgroundColor: '#F7F4EB', flex: 1 }, assessmentIntroPage: { flex: 1, paddingBottom: 25, paddingHorizontal: 21, paddingTop: 17 }, assessmentIntroContent: { flex: 1, justifyContent: 'center', paddingBottom: 8, paddingTop: 70 }, assessmentIntroEyebrow: { color: '#BB8736', fontSize: 8, fontWeight: '500', letterSpacing: 2.1, marginBottom: 10 }, assessmentIntroTitle: { color: '#092E25', fontFamily: serif, fontSize: 29, fontWeight: '400', lineHeight: 35, textAlign: 'left' }, assessmentIntroCopy: { color: '#628078', fontSize: 12, lineHeight: 19, marginTop: 15, textAlign: 'left' }, assessmentFacts: { borderTopColor: '#DCD7CB', borderTopWidth: 1, marginTop: 27 }, assessmentFact: { alignItems: 'center', borderBottomColor: '#DCD7CB', borderBottomWidth: 1, flexDirection: 'row', minHeight: 43 }, factIcon: { alignItems: 'flex-start', justifyContent: 'center', width: 29 }, factIconText: { color: '#6B9A87', fontSize: 8, fontWeight: '500', letterSpacing: .6 }, factTextWrap: { flex: 1 }, factText: { color: '#173A31', fontSize: 12, fontWeight: '500' }, factDetail: { color: '#8A8F8B', fontSize: 11, marginTop: 2 }, assessmentEmblem: { alignItems: 'center', alignSelf: 'center', backgroundColor: '#E9F0E7', borderRadius: 34, height: 68, justifyContent: 'center', marginBottom: 24, width: 68 }, assessmentEmblemText: { color: '#075A3F', fontSize: 36 },

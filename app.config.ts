@@ -18,8 +18,13 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       projectId: '5fd63f99-6df9-4147-bb0d-5cb8d7cde91f',
     },
   },
+  experiments: {
+    ...config.experiments,
+    onDemandFilesystem: false,
+  },
   plugins: [
     'expo-web-browser',
+    'expo-asset',
     [
       'expo-splash-screen',
       {
