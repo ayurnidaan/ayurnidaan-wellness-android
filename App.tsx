@@ -1,15 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Animated, Dimensions, Image, KeyboardAvoidingView, Modal, Platform, Pressable, SafeAreaView, ScrollView, StatusBar as NativeStatusBar, StyleSheet, Text, TextInput, View, type ImageSourcePropType, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native';
+import { ActivityIndicator, Animated, BackHandler, Dimensions, Image, KeyboardAvoidingView, Modal, Platform, Pressable, SafeAreaView, ScrollView, StatusBar as NativeStatusBar, StyleSheet, Text, TextInput, View, type ImageSourcePropType, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import * as AuthSession from 'expo-auth-session';
 import * as WebBrowser from 'expo-web-browser';
 import * as ImagePicker from 'expo-image-picker';
 import { FunctionsHttpError, type Session } from '@supabase/supabase-js';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from './src/lib/supabase';
+import { openNativeRazorpayCheckout, type RazorpayCheckoutOptions } from './src/lib/razorpay';
 import { colors } from './src/theme';
 
 WebBrowser.maybeCompleteAuthSession();
-type Screen = 'splash' | 'intro' | 'auth' | 'account' | 'profile' | 'terms' | 'confirmation' | 'home' | 'prakriti' | 'currentHealth' | 'food' | 'yoga' | 'doctor' | 'shop' | 'profileHub' | 'ai';
+type Screen = 'splash' | 'intro' | 'auth' | 'account' | 'profile' | 'goals' | 'terms' | 'confirmation' | 'home' | 'prakriti' | 'currentHealth' | 'food' | 'yoga' | 'doctor' | 'shop' | 'profileHub' | 'ai';
 type Dosha = 'vata' | 'pitta' | 'kapha';
 type AssessmentAnswer = 'A' | 'B' | 'C';
 type AssessmentQuestion = { prompt: string; options: Record<AssessmentAnswer, string> };
@@ -20,6 +22,31 @@ const validationMode: ValidationMode | null = configuredValidationMode === 'prak
   ? configuredValidationMode
   : null;
 let openAIFromSharedNavigation: (() => void) | undefined;
+
+function useAndroidBack(onBack: () => void, enabled = true) {
+  const onBackRef = useRef(onBack);
+  useEffect(() => { onBackRef.current = onBack; }, [onBack]);
+  useEffect(() => {
+    if (Platform.OS !== 'android' || !enabled) return;
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      onBackRef.current();
+      return true;
+    });
+    return () => subscription.remove();
+  }, [enabled]);
+}
+
+const redFlagPatterns = [
+  /\b(chest pain|chest pressure|chest tightness)\b/i,
+  /\b(can(?:not|'t) breathe|severe shortness of breath|struggling to breathe|choking)\b/i,
+  /\b(face droop|one[- ]sided weakness|slurred speech|signs? of (?:a )?stroke)\b/i,
+  /\b(fainted|fainting|unconscious|unresponsive|seizure)\b/i,
+  /\b(severe bleeding|bleeding heavily|vomiting blood|coughing blood|black tarry stool)\b/i,
+  /\b(anaphylaxis|throat (?:is )?swelling|swollen tongue|overdose|poisoning|suicidal|suicide|kill myself|self[- ]harm)\b/i,
+  /\b(sudden (?:worst|severe) headache|worst headache of my life)\b/i,
+];
+function isRedFlagMessage(message: string) { return redFlagPatterns.some(pattern => pattern.test(message)); }
+const redFlagDoctorHandoffKey = 'ayurnidaan:red-flag-doctor-handoff';
 const assessmentQuestions: AssessmentQuestion[] = [
   { prompt: 'How would you describe your natural body build?', options: { A: 'Thin or lean, with visible joints', B: 'Medium and balanced', C: 'Broad, heavy or muscular' } },
   { prompt: 'How does your skin usually feel?', options: { A: 'Dry, rough or thin', B: 'Soft and warm; gets red or irritated easily', C: 'Thick, smooth, oily and cool' } },
@@ -108,10 +135,18 @@ export default function App() {
       return;
     }
     const hasBasicDetails = Boolean(data?.full_name?.trim() && data?.date_of_birth && data?.sex && data?.height_cm && data?.weight_kg);
-    setScreen(data?.profile_completed_at ? 'home' : hasBasicDetails ? 'terms' : data?.full_name?.trim() ? 'profile' : 'account');
+    const hasHealthGoals = Array.isArray(currentSession.user.user_metadata.health_goals) && currentSession.user.user_metadata.health_goals.length > 0;
+    setScreen(data?.profile_completed_at ? 'home' : hasBasicDetails ? hasHealthGoals ? 'terms' : 'goals' : data?.full_name?.trim() ? 'profile' : 'account');
   }
   async function finishSplash() { if (session) await routeUser(session); else setScreen('intro'); }
   async function authenticated(nextSession: Session) { setSession(nextSession); await routeUser(nextSession); }
+  const rootBackTargets: Partial<Record<Screen, Screen>> = {
+    auth: 'intro', account: 'auth', profile: 'account', goals: 'profile', terms: validationMode ? 'account' : 'goals', confirmation: 'terms',
+  };
+  useAndroidBack(() => {
+    const target = rootBackTargets[screen];
+    if (target) setScreen(target);
+  }, Boolean(rootBackTargets[screen]));
   let content: React.ReactNode;
   if (!authChecked) content = <View style={styles.splash}><StatusBar style="light" /><ActivityIndicator color="#D2A33D" /></View>;
   else if (screen === 'splash') content = <BrandSplash onFinish={finishSplash} />;
@@ -120,17 +155,18 @@ export default function App() {
   else if (screen === 'account') content = validationMode
     ? <ValidationAccountScreen session={session} onBack={() => setScreen('auth')} onComplete={() => setScreen('terms')} />
     : <AccountScreen session={session} onBack={() => setScreen('auth')} onComplete={() => setScreen('profile')} />;
-  else if (screen === 'profile') content = <ProfileScreen session={session} onBack={() => setScreen('account')} onComplete={() => setScreen('terms')} />;
-  else if (screen === 'terms') content = <TermsConsentScreen session={session} onBack={() => setScreen(validationMode ? 'account' : 'profile')} onComplete={() => setScreen('confirmation')} />;
+  else if (screen === 'profile') content = <ProfileScreen session={session} onBack={() => setScreen('account')} onComplete={() => setScreen('goals')} />;
+  else if (screen === 'goals') content = <HealthGoalsScreen session={session} onBack={() => setScreen('profile')} onComplete={() => setScreen('terms')} />;
+  else if (screen === 'terms') content = <TermsConsentScreen session={session} onBack={() => setScreen(validationMode ? 'account' : 'goals')} onComplete={() => setScreen('confirmation')} />;
   else if (screen === 'confirmation') content = <ConfirmationScreen session={session} mode={validationMode} onContinue={() => setScreen(validationMode === 'vikriti' ? 'currentHealth' : validationMode === 'prakriti' ? 'prakriti' : 'home')} />;
   else if (screen === 'prakriti') content = <PrakritiAssessment session={session} onExit={() => setScreen('home')} onNextAssessment={() => setScreen('currentHealth')} />;
-  else if (screen === 'currentHealth') content = <CurrentHealthAssessment session={session} onExit={() => setScreen('home')} onReturnToStart={() => setScreen('confirmation')} />;
+  else if (screen === 'currentHealth') content = <CurrentHealthAssessment session={session} onExit={() => setScreen('home')} onOpenDoctor={() => setScreen('doctor')} onReturnToStart={() => setScreen('confirmation')} />;
   else if (screen === 'food') content = <FoodScreen session={session} onExit={() => setScreen('home')} onOpenDoctor={() => setScreen('doctor')} onOpenShop={() => setScreen('shop')} onOpenProfile={() => setScreen('profileHub')} onOpenAI={() => setScreen('ai')} />;
   else if (screen === 'yoga') content = <YogaScreen session={session} onExit={() => setScreen('home')} onOpenDoctor={() => setScreen('doctor')} onOpenShop={() => setScreen('shop')} onOpenProfile={() => setScreen('profileHub')} onOpenAI={() => setScreen('ai')} />;
   else if (screen === 'doctor') content = <DoctorFlow session={session} onExit={() => setScreen('home')} onOpenShop={() => setScreen('shop')} onOpenProfile={() => setScreen('profileHub')} onOpenAI={() => setScreen('ai')} />;
   else if (screen === 'shop') content = <ShopFlow session={session} onExit={() => setScreen('home')} onOpenDoctor={() => setScreen('doctor')} onOpenProfile={() => setScreen('profileHub')} onOpenAI={() => setScreen('ai')} />;
   else if (screen === 'profileHub') content = <ProfileHub session={session} onExit={() => setScreen('home')} onOpenShop={() => setScreen('shop')} onOpenDoctor={() => setScreen('doctor')} onOpenAI={() => setScreen('ai')} onRetakePrakriti={() => setScreen('prakriti')} onRetakeVikriti={() => setScreen('currentHealth')} onLogout={async () => { await supabase.auth.signOut(); setSession(null); setScreen('intro'); }} />;
-  else if (screen === 'ai') content = <AIChat onExit={() => setScreen('home')} onOpenShop={() => setScreen('shop')} onOpenDoctor={() => setScreen('doctor')} onOpenProfile={() => setScreen('profileHub')} />;
+  else if (screen === 'ai') content = <AIChat session={session} onExit={() => setScreen('home')} onOpenShop={() => setScreen('shop')} onOpenDoctor={() => setScreen('doctor')} onOpenProfile={() => setScreen('profileHub')} />;
   else content = <HomeScreen session={session} onStartPrakriti={() => setScreen('prakriti')} onStartCurrentHealth={() => setScreen('currentHealth')} onOpenFood={() => setScreen('food')} onOpenYoga={() => setScreen('yoga')} onOpenDoctor={() => setScreen('doctor')} onOpenShop={() => setScreen('shop')} onOpenProfile={() => setScreen('profileHub')} onOpenAI={() => setScreen('ai')} />;
 
   const darkStatusBarBackground = screen === 'splash' || screen === 'confirmation' || screen === 'home' || screen === 'currentHealth' || screen === 'food' || screen === 'yoga' || screen === 'ai';
@@ -272,6 +308,37 @@ function ProfileScreen({ session, onBack, onComplete }: { session: Session | nul
   </ScreenFrame>;
 }
 
+const healthGoalOptions = [
+  { label: 'Digestion', icon: '◔' },
+  { label: 'Sleep', icon: '☾' },
+  { label: 'Stress & mood', icon: '⊖' },
+  { label: 'Weight', icon: '□' },
+  { label: 'Energy', icon: 'ϟ' },
+  { label: 'Skin & hair', icon: '○' },
+  { label: 'Joints', icon: '⌁' },
+  { label: 'Immunity', icon: '◌' },
+  { label: "Women's health", icon: '♀' },
+  { label: 'General wellbeing', icon: '♡' },
+];
+
+function HealthGoalsScreen({ session, onBack, onComplete, profileEdit = false }: { session: Session | null; onBack: () => void; onComplete: () => void; profileEdit?: boolean }) {
+  const existing = Array.isArray(session?.user.user_metadata.health_goals) ? session.user.user_metadata.health_goals.filter((goal: unknown): goal is string => typeof goal === 'string').slice(0, 3) : [];
+  const [selected, setSelected] = useState<string[]>(existing);
+  const [saving, setSaving] = useState(false); const [error, setError] = useState('');
+  function toggleGoal(goal: string) {
+    setError('');
+    setSelected(current => current.includes(goal) ? current.filter(item => item !== goal) : current.length < 3 ? [...current, goal] : current);
+  }
+  async function save() {
+    if (!session?.user.id) return setError('Please sign in again.');
+    if (!selected.length) return setError('Choose at least one health goal to continue.');
+    setSaving(true); setError('');
+    const { error: saveError } = await supabase.auth.updateUser({ data: { health_goals: selected } });
+    setSaving(false); if (saveError) return setError(saveError.message); onComplete();
+  }
+  return <SafeAreaView style={styles.goalsSafe}><StatusBar style="dark" /><View style={styles.goalsPage}><BackButton onPress={onBack} onboarding /><Text style={styles.goalsTitle}>What would you like to work on?</Text><Text style={styles.goalsIntro}>Pick up to three. Your food, yoga and product recommendations are ordered around these.</Text><View style={styles.goalsBody}><View style={styles.goalsWrap}>{healthGoalOptions.map(goal => { const active = selected.includes(goal.label); const blocked = !active && selected.length >= 3; return <Pressable key={goal.label} accessibilityRole="checkbox" accessibilityState={{ checked: active, disabled: blocked }} disabled={blocked} onPress={() => toggleGoal(goal.label)} style={({ pressed }) => [styles.goalChip, active && styles.goalChipSelected, blocked && styles.goalChipBlocked, pressed && styles.pressed]}><Text style={[styles.goalIcon, active && styles.goalChipTextSelected]}>{goal.icon}</Text><Text style={[styles.goalChipText, active && styles.goalChipTextSelected]}>{goal.label}</Text></Pressable>; })}</View><Text style={styles.goalsNote}>Goals can be changed any time from your profile.</Text>{error ? <Text style={styles.goalsError}>{error}</Text> : null}</View></View><View style={styles.goalsFooter}><Pressable accessibilityRole="button" disabled={!selected.length || saving} onPress={() => void save()} style={[styles.goalsContinue, !selected.length && styles.goalsContinueDisabled]}>{saving ? <ActivityIndicator color="#FFF" /> : <Text style={styles.goalsContinueText}>{profileEdit ? `Save ${selected.length} ${selected.length === 1 ? 'goal' : 'goals'}` : `Continue with ${selected.length} ${selected.length === 1 ? 'goal' : 'goals'}`}</Text>}</Pressable></View></SafeAreaView>;
+}
+
 function TermsConsentScreen({ session, onBack, onComplete }: { session: Session | null; onBack: () => void; onComplete: () => void }) {
   const [documentRead, setDocumentRead] = useState(false);
   const [personalisationAccepted, setPersonalisationAccepted] = useState(false);
@@ -288,7 +355,15 @@ function TermsConsentScreen({ session, onBack, onComplete }: { session: Session 
     setSaving(true); setError('');
     const acceptedAt = new Date().toISOString();
     const { error: authError } = await supabase.auth.updateUser({ data: { terms_accepted_at: acceptedAt, personalisation_consent_at: acceptedAt } });
-    const { error: profileError } = await supabase.from('profiles').upsert({ user_id: session.user.id, terms_accepted_at: acceptedAt, health_personalisation: true, profile_completed_at: acceptedAt });
+    const { error: profileError } = await supabase.from('profiles').upsert({
+      user_id: session.user.id,
+      terms_accepted_at: acceptedAt,
+      profile_completed_at: acceptedAt,
+      notifications_enabled: true,
+      health_personalisation: true,
+      ai_context_enabled: true,
+      doctor_sharing_enabled: true,
+    });
     setSaving(false);
     if (authError) return setError(authError.message);
     if (profileError) return setError(profileError.message);
@@ -324,6 +399,11 @@ function PrakritiAssessment({ session, onExit, onNextAssessment }: { session: Se
   const [saveError, setSaveError] = useState('');
   const [assessmentId, setAssessmentId] = useState<string | null>(null);
   const currentAnswer = answers[questionIndex];
+  useAndroidBack(() => {
+    if (stage === 'questions') goBack();
+    else if (stage === 'result') setStage('intro');
+    else onExit();
+  });
 
   function chooseAnswer(answer: AssessmentAnswer) {
     setAnswers((values) => values.map((value, index) => index === questionIndex ? answer : value));
@@ -514,7 +594,7 @@ type PatientContext = { vataPercentage: number; pittaPercentage: number; kaphaPe
 type GunaRow = { symptom: string; gunas: string[]; doshas: VikritiDosha[] };
 type VikritiAssessmentResult = { assessmentId: string; conclusion: string; doshas: VikritiDosha[]; symptoms: string[]; reasoning: string; conversation: ChatMessage[]; patientContext: PatientContext; gunaRows?: GunaRow[] };
 
-function CurrentHealthAssessment({ session, onExit, onReturnToStart }: { session: Session | null; onExit: () => void; onReturnToStart: () => void }) {
+function CurrentHealthAssessment({ session, onExit, onOpenDoctor, onReturnToStart }: { session: Session | null; onExit: () => void; onOpenDoctor: () => void; onReturnToStart: () => void }) {
   const [stage, setStage] = useState<'intro' | 'patient' | 'chat' | 'ready' | 'result'>(validationMode === 'vikriti' ? 'patient' : 'intro');
   const [validationResult, setValidationResult] = useState<VikritiAssessmentResult | null>(null);
   const [patientContext, setPatientContext] = useState<PatientContext | null>(null);
@@ -543,6 +623,12 @@ function CurrentHealthAssessment({ session, onExit, onReturnToStart }: { session
     });
   }
   useEffect(() => { if (validationMode !== 'vikriti') void loadAppPatientContext(); }, [session?.user.id]);
+  useAndroidBack(() => {
+    if (stage === 'chat') setStage('intro');
+    else if (stage === 'patient') onExit();
+    else if (stage === 'result' || stage === 'ready') setStage('intro');
+    else onExit();
+  });
   if (stage === 'intro') return <SafeAreaView style={styles.assessmentSafe}>
     <StatusBar style="dark" />
     <View style={styles.assessmentIntroPage}>
@@ -563,7 +649,7 @@ function CurrentHealthAssessment({ session, onExit, onReturnToStart }: { session
   if (stage === 'patient') return <VikritiPatientContextScreen onContinue={(context) => { setPatientContext(context); setStage('chat'); }} />;
   if (stage === 'result' && validationResult) return <VikritiValidationResult session={session} result={validationResult} onRetake={onReturnToStart} />;
   if (stage === 'ready') return <HealthProfileReady onContinue={onExit} />;
-  return <CurrentHealthChat session={session} patientContext={patientContext} showBack={validationMode !== 'vikriti'} onBack={() => setStage('intro')} onComplete={(result) => { if (validationMode === 'vikriti') { setValidationResult(result); setStage('result'); } else setStage('ready'); }} />;
+  return <CurrentHealthChat session={session} patientContext={patientContext} showBack={validationMode !== 'vikriti'} onBack={() => setStage('intro')} onOpenDoctor={onOpenDoctor} onComplete={(result) => { if (validationMode === 'vikriti') { setValidationResult(result); setStage('result'); } else setStage('ready'); }} />;
 }
 
 function VikritiPatientContextScreen({ onContinue }: { onContinue: (context: PatientContext) => void }) {
@@ -593,11 +679,41 @@ function VikritiPatientContextScreen({ onContinue }: { onContinue: (context: Pat
 type VikritiDosha = 'Vata' | 'Pitta' | 'Kapha';
 type VikritiFinding = { dosha: VikritiDosha; symptoms: string[]; reasoning: string };
 type VikritiPhase = 'complaint' | 'complaintFollowUp' | 'domain' | 'domainFollowUp' | 'final' | 'concluding';
+type ComplaintFollowUpItem = { symptom: string };
 type PendingVikritiRequest =
-  | { kind: 'followUp'; previousQuestion: string; patientResponse: string; conversation: ChatMessage[]; nextPhase: 'complaintFollowUp' | 'domainFollowUp' }
+  | { kind: 'classifyComplaints'; patientResponse: string; conversation: ChatMessage[] }
+  | { kind: 'followUp'; previousQuestion: string; patientResponse: string; conversation: ChatMessage[]; nextPhase: 'complaintFollowUp' | 'domainFollowUp'; targetSymptom?: string; followUpNumber?: 1 | 2 }
   | { kind: 'final'; conversation: ChatMessage[] };
 
 const currentHealthOpening = 'Please describe the main symptom, complaint, or health concern you are experiencing right now.';
+const prakritiComplaintOptions: Record<Dosha, string[]> = {
+  vata: [
+    'Bloating and irregular digestion',
+    'Dry skin / dryness of mouth',
+    'Difficulty sleeping or light, interrupted sleep',
+  ],
+  pitta: [
+    'Acidity / heartburn',
+    'Burning sensations and heat intolerance',
+    'Skin inflammation, redness, or rashes',
+  ],
+  kapha: [
+    'Heaviness and sluggishness after meals',
+    'Excess mucus / congestion',
+    'Easy weight gain or difficulty losing weight',
+  ],
+};
+function getPrakritiComplaintOptions(context: Pick<PatientContext, 'vataPercentage' | 'pittaPercentage' | 'kaphaPercentage'> | null) {
+  if (!context) return [];
+  const scores: { dosha: Dosha; value: number }[] = [
+    { dosha: 'vata', value: context.vataPercentage },
+    { dosha: 'pitta', value: context.pittaPercentage },
+    { dosha: 'kapha', value: context.kaphaPercentage },
+  ];
+  const maximum = Math.max(...scores.map(score => score.value));
+  if (!Number.isFinite(maximum) || maximum <= 0) return [];
+  return scores.filter(score => score.value === maximum).flatMap(score => prakritiComplaintOptions[score.dosha]);
+}
 const finalComplaintQuestion = 'Any other complaints?';
 const currentHealthQuestionnaireVersion = 'VIKRITI_CORE_V1.0';
 type CurrentHealthAnswer = { id: string; text: string };
@@ -712,17 +828,20 @@ function getVikritiConclusion(doshas: VikritiDosha[]) {
   return `Your ${label} ${doshas.length === 1 ? 'dosha is' : 'doshas are'} imbalanced`;
 }
 
-function CurrentHealthChat({ session, patientContext, showBack = true, onBack, onComplete }: { session: Session | null; patientContext: PatientContext | null; showBack?: boolean; onBack: () => void; onComplete: (result: VikritiAssessmentResult) => void }) {
-  const [messages, setMessages] = useState<ChatMessage[]>([{ role: 'assistant', content: currentHealthOpening }]);
+function CurrentHealthChat({ session, patientContext, showBack = true, onBack, onOpenDoctor, onComplete }: { session: Session | null; patientContext: PatientContext | null; showBack?: boolean; onBack: () => void; onOpenDoctor: () => void; onComplete: (result: VikritiAssessmentResult) => void }) {
+  const [messages, setMessages] = useState<ChatMessage[]>([{ role: 'assistant', content: currentHealthOpening, options: getPrakritiComplaintOptions(patientContext) }]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
   const [phase, setPhase] = useState<VikritiPhase>('complaint');
   const [complaintFollowUpsAnswered, setComplaintFollowUpsAnswered] = useState(0);
+  const [complaintFollowUpPlan, setComplaintFollowUpPlan] = useState<ComplaintFollowUpItem[]>([]);
+  const [complaintSymptomIndex, setComplaintSymptomIndex] = useState(0);
   const [domainQuestionIndex, setDomainQuestionIndex] = useState(0);
   const [domainAnswers, setDomainAnswers] = useState<Record<string, StoredCurrentHealthAnswer>>({});
   const [pendingRequest, setPendingRequest] = useState<PendingVikritiRequest | null>(null);
   const [inputHeight, setInputHeight] = useState(44);
+  const [redFlagText, setRedFlagText] = useState('');
   const scrollRef = useRef<ScrollView>(null);
 
   function getFunctionErrorMessage(functionError: unknown, data: unknown) {
@@ -730,11 +849,27 @@ function CurrentHealthChat({ session, patientContext, showBack = true, onBack, o
     return Promise.resolve(typeof data === 'object' && data && 'error' in data ? String((data as { error?: unknown }).error ?? '') : '');
   }
 
+  async function requestComplaintClassification(request: Extract<PendingVikritiRequest, { kind: 'classifyComplaints' }>) {
+    setSending(true); setError(''); setPendingRequest(request);
+    const { data, error: functionError } = await supabase.functions.invoke('current-health-chat', { body: { mode: 'classify_complaints', patientResponse: request.patientResponse, patientContext } });
+    if (data?.red_flag === true) { setPendingRequest(null); setSending(false); setRedFlagText(request.patientResponse); return; }
+    const classifiedSymptoms = Array.isArray(data?.classification?.symptoms) ? data.classification.symptoms : null;
+    const functionMessage = await getFunctionErrorMessage(functionError, data);
+    if (functionError || !classifiedSymptoms || !classifiedSymptoms.every((item: unknown) => item && typeof item === 'object' && typeof (item as Record<string, unknown>).symptom === 'string' && typeof (item as Record<string, unknown>).covered_by_domain_questions === 'boolean')) {
+      setSending(false); setError(functionMessage || functionError?.message || 'Could not identify the symptoms in the opening complaint. Please try again.'); return;
+    }
+    const plan = classifiedSymptoms.filter((item: { covered_by_domain_questions: boolean }) => !item.covered_by_domain_questions).map((item: { symptom: string }) => ({ symptom: item.symptom.trim() })).filter((item: ComplaintFollowUpItem) => item.symptom);
+    setComplaintFollowUpPlan(plan); setComplaintSymptomIndex(0); setComplaintFollowUpsAnswered(0); setPendingRequest(null); setSending(false);
+    if (!plan.length) { showDomainQuestion(0, request.conversation); return; }
+    requestFollowUp({ kind: 'followUp', previousQuestion: currentHealthOpening, patientResponse: request.patientResponse, conversation: request.conversation, nextPhase: 'complaintFollowUp', targetSymptom: plan[0].symptom, followUpNumber: 1 });
+  }
+
   async function requestFollowUp(request: Extract<PendingVikritiRequest, { kind: 'followUp' }>) {
     setSending(true); setError('');
     setPendingRequest(request);
     const openingHistory = request.nextPhase === 'complaintFollowUp' ? request.conversation : undefined;
-    const { data, error: functionError } = await supabase.functions.invoke('current-health-chat', { body: { mode: 'follow_up', previousQuestion: request.previousQuestion, patientResponse: request.patientResponse, patientContext, messages: openingHistory } });
+    const { data, error: functionError } = await supabase.functions.invoke('current-health-chat', { body: { mode: 'follow_up', previousQuestion: request.previousQuestion, patientResponse: request.patientResponse, patientContext, messages: openingHistory, targetSymptom: request.targetSymptom, followUpNumber: request.followUpNumber } });
+    if (data?.red_flag === true) { setPendingRequest(null); setSending(false); setRedFlagText(request.patientResponse); return; }
     const reply = typeof data?.reply === 'string' ? data.reply.trim().replace(/^"|"$/g, '') : '';
     const options = Array.isArray(data?.options) ? data.options.filter((option: unknown): option is string => typeof option === 'string' && option.trim().length > 0).slice(0, 3) : [];
     const functionMessage = await getFunctionErrorMessage(functionError, data);
@@ -791,14 +926,25 @@ function CurrentHealthChat({ session, patientContext, showBack = true, onBack, o
     if (!content || sending || pendingRequest) return;
     const next: ChatMessage[] = [...messages, { role: 'user', content }];
     setInput(''); setInputHeight(44); setMessages(next);
-    if (phase === 'complaint') { requestFollowUp({ kind: 'followUp', previousQuestion: currentHealthOpening, patientResponse: content, conversation: next, nextPhase: 'complaintFollowUp' }); return; }
+    if (isRedFlagMessage(content)) { setRedFlagText(content); return; }
+    if (phase === 'complaint') {
+      if (validationMode === 'vikriti') requestComplaintClassification({ kind: 'classifyComplaints', patientResponse: content, conversation: next });
+      else requestFollowUp({ kind: 'followUp', previousQuestion: currentHealthOpening, patientResponse: content, conversation: next, nextPhase: 'complaintFollowUp' });
+      return;
+    }
     if (phase === 'complaintFollowUp') {
       const completedFollowUps = complaintFollowUpsAnswered + 1;
       setComplaintFollowUpsAnswered(completedFollowUps);
-      const requiredFollowUps = 3;
+      const requiredFollowUps = validationMode === 'vikriti' ? 2 : 3;
       if (completedFollowUps < requiredFollowUps) {
         const previousQuestion = messages.at(-1)?.role === 'assistant' ? messages.at(-1)!.content : currentHealthOpening;
-        requestFollowUp({ kind: 'followUp', previousQuestion, patientResponse: content, conversation: next, nextPhase: 'complaintFollowUp' });
+        requestFollowUp({ kind: 'followUp', previousQuestion, patientResponse: content, conversation: next, nextPhase: 'complaintFollowUp', targetSymptom: validationMode === 'vikriti' ? complaintFollowUpPlan[complaintSymptomIndex]?.symptom : undefined, followUpNumber: validationMode === 'vikriti' ? 2 : undefined });
+      } else if (validationMode === 'vikriti' && complaintSymptomIndex + 1 < complaintFollowUpPlan.length) {
+        const nextSymptomIndex = complaintSymptomIndex + 1;
+        const nextSymptom = complaintFollowUpPlan[nextSymptomIndex];
+        const openingComplaint = next.find(message => message.role === 'user')?.content ?? content;
+        setComplaintSymptomIndex(nextSymptomIndex); setComplaintFollowUpsAnswered(0);
+        requestFollowUp({ kind: 'followUp', previousQuestion: currentHealthOpening, patientResponse: openingComplaint, conversation: next, nextPhase: 'complaintFollowUp', targetSymptom: nextSymptom.symptom, followUpNumber: 1 });
       } else showDomainQuestion(0, next);
       return;
     }
@@ -826,10 +972,11 @@ function CurrentHealthChat({ session, patientContext, showBack = true, onBack, o
   function retry() {
     if (!pendingRequest) return;
     if (pendingRequest.kind === 'final') requestConclusion(pendingRequest);
+    else if (pendingRequest.kind === 'classifyComplaints') requestComplaintClassification(pendingRequest);
     else requestFollowUp(pendingRequest);
   }
   const inputLocked = sending || pendingRequest !== null || phase === 'concluding';
-  return <SafeAreaView style={styles.currentHealthChatSafe}><StatusBar style="light" /><KeyboardAvoidingView style={styles.flex} behavior="padding" keyboardVerticalOffset={0}><View style={styles.currentHealthChatHeader}>{showBack ? <BackButton onPress={onBack} light /> : null}<View style={styles.currentHealthChatHeading}><Text style={styles.aiTitle}>Current Health Assessment</Text><Text style={styles.aiSubtitle}>A conversational Vikriti assessment</Text></View></View><ScrollView ref={scrollRef} style={styles.flex} contentContainerStyle={styles.chatMessages} keyboardDismissMode="interactive" keyboardShouldPersistTaps="handled" onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}>{messages.map((message, index) => <View key={index} style={[styles.chatMessageGroup, message.role === 'user' && styles.userMessageGroup]}><View style={[styles.chatBubble, styles.currentHealthMessageBubble, message.role === 'user' ? styles.userBubble : styles.assistantBubble]}><Text style={[styles.chatText, message.role === 'user' && styles.userChatText]}>{message.content}</Text></View>{message.role === 'assistant' && message.options?.length ? <View style={styles.answerSuggestionList}>{message.options.map(option => <Pressable key={option} disabled={inputLocked || index !== messages.length - 1} onPress={() => sendAnswer(option)} style={({ pressed }) => [styles.answerSuggestion, (inputLocked || index !== messages.length - 1) && styles.answerSuggestionDisabled, pressed && styles.pressed]}><Text style={styles.answerSuggestionText}>{option}</Text></Pressable>)}</View> : null}</View>)}{sending ? <View style={[styles.chatBubble, styles.assistantBubble]}><ActivityIndicator color="#075A3F" /></View> : null}{error ? <View style={styles.chatErrorCard}><Text style={styles.error}>{error}</Text><Pressable onPress={retry}><Text style={styles.chatRetry}>Try again</Text></Pressable></View> : null}</ScrollView><View style={styles.chatComposer}><TextInput value={input} onChangeText={setInput} editable={!inputLocked} multiline scrollEnabled={inputHeight >= 120} onFocus={() => requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: true }))} onContentSizeChange={(event) => { setInputHeight(Math.max(44, Math.min(120, event.nativeEvent.contentSize.height))); requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: true })); }} placeholder="Describe how you are feeling..." placeholderTextColor="#929993" style={[styles.chatInput, styles.currentHealthChatInput, { height: inputHeight }]} /><Pressable disabled={inputLocked} onPress={send} style={[styles.chatSend, inputLocked && styles.chatSendDisabled]}><Text style={styles.chatSendText}>➤</Text></Pressable></View></KeyboardAvoidingView></SafeAreaView>;
+  return <SafeAreaView style={styles.currentHealthChatSafe}><StatusBar style="light" /><KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={0}><View style={styles.currentHealthChatHeader}>{showBack ? <BackButton onPress={onBack} light /> : null}<View style={styles.currentHealthChatHeading}><Text style={styles.aiTitle}>Current Health Assessment</Text><Text style={styles.aiSubtitle}>A conversational Vikriti assessment</Text></View></View><ScrollView ref={scrollRef} style={styles.flex} contentContainerStyle={styles.chatMessages} automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'} keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'} keyboardShouldPersistTaps="handled" onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}>{messages.map((message, index) => <View key={index} style={[styles.chatMessageGroup, message.role === 'user' && styles.userMessageGroup]}><View style={[styles.chatBubble, styles.currentHealthMessageBubble, message.role === 'user' ? styles.userBubble : styles.assistantBubble]}><Text style={[styles.chatText, message.role === 'user' && styles.userChatText]}>{message.content}</Text></View>{message.role === 'assistant' && message.options?.length ? <View style={styles.answerSuggestionList}>{message.options.map(option => <Pressable key={option} disabled={inputLocked || index !== messages.length - 1} onPress={() => sendAnswer(option)} style={({ pressed }) => [styles.answerSuggestion, (inputLocked || index !== messages.length - 1) && styles.answerSuggestionDisabled, pressed && styles.pressed]}><Text style={styles.answerSuggestionText}>{option}</Text></Pressable>)}</View> : null}</View>)}{sending ? <View style={[styles.chatBubble, styles.assistantBubble]}><ActivityIndicator color="#075A3F" /></View> : null}{error ? <View style={styles.chatErrorCard}><Text style={styles.error}>{error}</Text><Pressable onPress={retry}><Text style={styles.chatRetry}>Try again</Text></Pressable></View> : null}</ScrollView><View style={styles.chatComposer}><TextInput value={input} onChangeText={setInput} editable={!inputLocked} multiline scrollEnabled={inputHeight >= 120} onFocus={() => requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: true }))} onContentSizeChange={(event) => { setInputHeight(Math.max(44, Math.min(120, event.nativeEvent.contentSize.height))); requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: true })); }} placeholder="Describe how you are feeling..." placeholderTextColor="#929993" style={[styles.chatInput, styles.currentHealthChatInput, { height: inputHeight }]} /><Pressable disabled={inputLocked} onPress={send} style={[styles.chatSend, inputLocked && styles.chatSendDisabled]}><Text style={styles.chatSendText}>➤</Text></Pressable></View></KeyboardAvoidingView><RedFlagSafeguardModal visible={Boolean(redFlagText)} userText={redFlagText} onClose={() => setRedFlagText('')} onDoctor={onOpenDoctor} /></SafeAreaView>;
 }
 
 function VikritiValidationResult({ session, result, onRetake }: { session: Session | null; result: VikritiAssessmentResult; onRetake: () => void }) {
@@ -1059,19 +1206,23 @@ function HomeScreen({ session, onStartPrakriti, onStartCurrentHealth, onOpenFood
   useEffect(() => {
     if (!session?.user.id) return;
     let active = true;
+    const today = new Date().toISOString().slice(0, 10);
     Promise.all([
       supabase.from('prakriti_assessments').select('vata_percentage, pitta_percentage, kapha_percentage').eq('user_id', session.user.id).order('completed_at', { ascending: false }).limit(1).maybeSingle(),
       supabase.from('current_health_assessments').select('id, conclusion').eq('user_id', session.user.id).order('completed_at', { ascending: false }).limit(1),
-      supabase.from('appointments').select('doctor_name, doctor_initials, appointment_date, appointment_time').eq('user_id', session.user.id).eq('status', 'booked').order('created_at', { ascending: false }).limit(1).maybeSingle(),
+      supabase.from('appointments').select('doctor_name, doctor_initials, appointment_date, appointment_time').eq('user_id', session.user.id).eq('status', 'booked').gte('appointment_date', today).order('appointment_date', { ascending: true }).order('created_at', { ascending: false }).limit(1).maybeSingle(),
       supabase.from('shop_products').select('id, name, weight, price, mrp, icon, categories, tags, description, rating, rating_count').eq('active', true).order('sort_order').limit(100),
       supabase.from('supplement_recommendation_plans').select('recommendations').eq('user_id', session.user.id).order('created_at', { ascending: false }).limit(1).maybeSingle(),
-    ]).then(([prakritiResult, healthResult, appointmentResult, productResult, recommendationResult]) => {
+      readStoredList<BookedAppointment>(demoAppointmentsKey(session.user.id)),
+    ]).then(([prakritiResult, healthResult, appointmentResult, productResult, recommendationResult, storedAppointments]) => {
       if (!active) return;
       const result = prakritiResult.data;
       setLatestPrakriti(result ? { vata: result.vata_percentage, pitta: result.pitta_percentage, kapha: result.kapha_percentage } : null);
       setHasCurrentHealth(Boolean(healthResult.data?.length));
       setLatestVikriti(healthResult.data?.[0]?.conclusion ?? null);
-      setAppointment(appointmentResult.data ?? null);
+      const appointmentCandidates = [appointmentResult.data, ...storedAppointments].filter((item): item is NonNullable<typeof item> => Boolean(item && item.appointment_date >= today));
+      appointmentCandidates.sort((a, b) => `${a.appointment_date} ${a.appointment_time}`.localeCompare(`${b.appointment_date} ${b.appointment_time}`));
+      setAppointment(appointmentCandidates[0] ?? null);
       if (productResult.data?.length) {
         const allProducts = productResult.data.map(item => ({ ...item, categories: item.categories ?? [], tags: item.tags ?? [], rating: `${Number(item.rating).toFixed(1)} (${item.rating_count})` }));
         const recommendationPlan = recommendationResult.data?.recommendations as { recommendations?: { supplement?: unknown }[] } | null | undefined;
@@ -1097,11 +1248,12 @@ function HomeScreen({ session, onStartPrakriti, onStartCurrentHealth, onOpenFood
     { icon: '◷', title: 'Lifestyle', detail: 'Early Dinner\nBefore 8 PM' },
   ];
   if (assessmentsComplete && latestPrakriti && dominantDosha) return <CompletedHome firstName={firstName} percentages={latestPrakriti} dominantDosha={dominantDosha} vikritiConclusion={latestVikriti} appointment={appointment} recommendedProducts={recommendedProducts} onRetakePrakriti={onStartPrakriti} onUpdateHealth={onStartCurrentHealth} onOpenFood={onOpenFood} onOpenYoga={onOpenYoga} onOpenDoctor={onOpenDoctor} onOpenShop={onOpenShop} onOpenProfile={onOpenProfile} onOpenAI={onOpenAI} />;
-  return <IncompleteHome firstName={firstName} hasPrakriti={hasPrakriti} onStartPrakriti={onStartPrakriti} onStartCurrentHealth={onStartCurrentHealth} onOpenFood={onOpenFood} onOpenYoga={onOpenYoga} onOpenDoctor={onOpenDoctor} onOpenShop={onOpenShop} onOpenProfile={onOpenProfile} onOpenAI={onOpenAI} />;
+  return <IncompleteHome firstName={firstName} hasPrakriti={hasPrakriti} appointment={appointment} onStartPrakriti={onStartPrakriti} onStartCurrentHealth={onStartCurrentHealth} onOpenFood={onOpenFood} onOpenYoga={onOpenYoga} onOpenDoctor={onOpenDoctor} onOpenShop={onOpenShop} onOpenProfile={onOpenProfile} onOpenAI={onOpenAI} />;
 }
 
-function IncompleteHome({ firstName, hasPrakriti, onStartPrakriti, onStartCurrentHealth, onOpenFood, onOpenYoga, onOpenDoctor, onOpenShop, onOpenProfile, onOpenAI }: { firstName: string; hasPrakriti: boolean; onStartPrakriti: () => void; onStartCurrentHealth: () => void; onOpenFood: () => void; onOpenYoga: () => void; onOpenDoctor: () => void; onOpenShop: () => void; onOpenProfile: () => void; onOpenAI: () => void }) {
+function IncompleteHome({ firstName, hasPrakriti, appointment, onStartPrakriti, onStartCurrentHealth, onOpenFood, onOpenYoga, onOpenDoctor, onOpenShop, onOpenProfile, onOpenAI }: { firstName: string; hasPrakriti: boolean; appointment: { doctor_name: string; doctor_initials: string; appointment_date: string; appointment_time: string } | null; onStartPrakriti: () => void; onStartCurrentHealth: () => void; onOpenFood: () => void; onOpenYoga: () => void; onOpenDoctor: () => void; onOpenShop: () => void; onOpenProfile: () => void; onOpenAI: () => void }) {
   const initial = firstName.charAt(0).toUpperCase();
+  const [lockedFeature, setLockedFeature] = useState<string | null>(null);
   const shortcuts = [
     { icon: '🍴', label: 'Food', onPress: onOpenFood },
     { icon: '𑁍', label: 'Yoga', onPress: onOpenYoga },
@@ -1115,12 +1267,25 @@ function IncompleteHome({ firstName, hasPrakriti, onStartPrakriti, onStartCurren
     <ScrollView contentContainerStyle={styles.homePreScroll} showsVerticalScrollIndicator={false}>
       <View style={styles.homePreHeader}><View><Text style={styles.homePreEyebrow}>GOOD MORNING</Text><Text style={styles.homePreName}>{firstName}</Text></View><Pressable accessibilityLabel="Open profile" onPress={onOpenProfile} style={styles.homePreAvatar}><Text style={styles.homePreAvatarText}>{initial}</Text></Pressable></View>
       <View style={styles.homePreBody}>
+        {appointment ? <Pressable onPress={onOpenDoctor} style={styles.homeAppointmentStrip}><View style={styles.homeAppointmentIcon}><Text style={styles.homeAppointmentIconText}>♧</Text></View><View style={styles.homeAppointmentCopy}><Text style={styles.homeAppointmentEyebrow}>UPCOMING APPOINTMENT</Text><Text numberOfLines={1} style={styles.homeAppointmentText}>{appointment.doctor_name} · {formatAppointmentDate(appointment.appointment_date)} at {appointment.appointment_time}</Text></View></Pressable> : null}
         <View style={styles.homeSetupCard}><Text style={styles.homeSetupEyebrow}>SET UP</Text><Text style={styles.homeSetupTitle}>Complete your assessments for{`\n`}personalised guidance</Text><View style={styles.homeSetupSteps}><HomeSetupStep number={hasPrakriti ? '✓' : '1'} active title="Prakriti assessment" copy={hasPrakriti ? 'Completed · tap to retake' : 'Your natural constitution'} onPress={hasPrakriti ? onStartPrakriti : undefined} /><HomeSetupStep number="2" active={hasPrakriti} title="Current health" copy="How you feel right now" /></View><Pressable onPress={hasPrakriti ? onStartCurrentHealth : onStartPrakriti} style={({ pressed }) => [styles.homeSetupButton, pressed && styles.pressed]}><Text style={styles.homeSetupButtonText}>{hasPrakriti ? 'Continue assessment' : 'Start now'}</Text></Pressable></View>
-        <Text style={styles.homePreExploreLabel}>EXPLORE</Text><View style={styles.homePreGrid}>{shortcuts.map(shortcut => <Pressable key={shortcut.label} onPress={shortcut.onPress} style={({ pressed }) => [styles.homePreTile, pressed && styles.pressed]}><View style={styles.homePreTileIcon}><Text style={styles.homePreTileIconText}>{shortcut.icon}</Text></View><Text style={styles.homePreTileLabel}>{shortcut.label}</Text></Pressable>)}</View>
+        <Text style={styles.homePreExploreLabel}>EXPLORE</Text><View style={styles.homePreGrid}>{shortcuts.map(shortcut => <Pressable key={shortcut.label} onPress={() => setLockedFeature(shortcut.label)} style={({ pressed }) => [styles.homePreTile, pressed && styles.pressed]}><View style={styles.homePreTileIcon}><Text style={styles.homePreTileIconText}>{shortcut.icon}</Text></View><Text style={styles.homePreTileLabel}>{shortcut.label}</Text></Pressable>)}</View>
       </View>
     </ScrollView>
     <View style={styles.homePreBottomNav}><HomePreNav label="Home" active /><HomePreNav label="Doctor" onPress={onOpenDoctor} /><HomePreNav label="AI" onPress={onOpenAI} /><HomePreNav label="Shop" onPress={onOpenShop} /><HomePreNav label="Profile" onPress={onOpenProfile} /></View>
+    <AssessmentLockSheet feature={lockedFeature} hasPrakriti={hasPrakriti} onClose={() => setLockedFeature(null)} onStartPrakriti={onStartPrakriti} onStartCurrentHealth={onStartCurrentHealth} />
   </SafeAreaView>;
+}
+
+function AssessmentLockSheet({ feature, hasPrakriti, onClose, onStartPrakriti, onStartCurrentHealth }: { feature: string | null; hasPrakriti: boolean; onClose: () => void; onStartPrakriti: () => void; onStartCurrentHealth: () => void }) {
+  const featureNames: Record<string, string> = { Food: 'Food plan', Yoga: 'Yoga plan', Pranayama: 'Pranayama guidance', Panchakarma: 'Panchakarma guidance', 'AI assistant': 'AI Vaidya', Doctor: 'Doctor matching' };
+  const title = feature ? featureNames[feature] ?? feature : '';
+  function startNextAssessment() { onClose(); requestAnimationFrame(() => hasPrakriti ? onStartCurrentHealth() : onStartPrakriti()); }
+  return <Modal animationType="slide" onRequestClose={onClose} statusBarTranslucent transparent visible={Boolean(feature)}><View style={styles.assessmentLockBackdrop}><Pressable accessibilityLabel="Close" onPress={onClose} style={styles.assessmentLockDismissArea} /><View accessibilityViewIsModal style={styles.assessmentLockSheet}><View style={styles.assessmentLockHandle} /><View style={styles.assessmentLockHeading}><View style={styles.assessmentLockIcon}><Text style={styles.assessmentLockIconText}>♙</Text></View><View style={styles.assessmentLockHeadingCopy}><Text style={styles.assessmentLockEyebrow}>LOCKED</Text><Text style={styles.assessmentLockTitle}>{title} unlocks after{`\n`}both assessments</Text></View></View><Text style={styles.assessmentLockBody}>Nothing here is personalised yet. Recommendations use your Prakriti and your current Vikriti reading, so both need to be completed first. Together they take about eight minutes and can be retaken later.</Text><View style={styles.assessmentLockChecklist}><AssessmentLockRow title="Prakriti assessment" detail="25 questions · about 5 minutes" complete={hasPrakriti} /><AssessmentLockRow title="Current health check" detail="Conversational · about 3 minutes" complete={false} /></View><Pressable onPress={startNextAssessment} style={({ pressed }) => [styles.assessmentLockPrimary, pressed && styles.pressed]}><Text style={styles.assessmentLockPrimaryText}>{hasPrakriti ? 'Start current health assessment' : 'Start Prakriti assessment'}</Text></Pressable><Pressable onPress={onClose} style={styles.assessmentLockLater}><Text style={styles.assessmentLockLaterText}>Not now</Text></Pressable></View></View></Modal>;
+}
+
+function AssessmentLockRow({ title, detail, complete }: { title: string; detail: string; complete: boolean }) {
+  return <View style={styles.assessmentLockRow}><View style={[styles.assessmentLockStatus, complete && styles.assessmentLockStatusComplete]}>{complete ? <Text style={styles.assessmentLockCheck}>✓</Text> : null}</View><View style={styles.assessmentLockRowCopy}><Text style={styles.assessmentLockRowTitle}>{title}</Text><Text style={styles.assessmentLockRowDetail}>{detail}</Text></View><Text style={[styles.assessmentLockPending, complete && styles.assessmentLockCompleted]}>{complete ? 'COMPLETE' : 'PENDING'}</Text></View>;
 }
 
 function HomeSetupStep({ number, active, title, copy, onPress }: { number: string; active: boolean; title: string; copy: string; onPress?: () => void }) {
@@ -1143,7 +1308,10 @@ type FoodPlanMeal = { time: string; meal: string; tags: string[] };
 type FoodPlanData = { why_this_plan: string; meals: { morning: FoodPlanMeal; midday: FoodPlanMeal; evening: FoodPlanMeal }; favour: string[]; limit: string[] };
 type FoodLogKey = keyof FoodPlanData['meals'];
 type FoodNutrition = { calories: number; protein: number; fat: number };
-type CustomFoodItem = FoodNutrition & { id: string; meal: FoodLogKey | 'snack'; name: string; servings: number };
+type FoodMealKey = FoodLogKey | 'snack';
+type FoodItemSource = 'manual' | 'scan';
+type CustomFoodItem = FoodNutrition & { id: string; meal: FoodMealKey; name: string; servings: number; servingLabel?: string; source?: FoodItemSource };
+type ScannedFoodItem = FoodNutrition & { id: string; name: string; servingLabel: string; confidence: 'high' | 'likely' | 'low'; selected: boolean; servings: number };
 type SupplementRecommendationData = { supplement: string; reasoning: string };
 type SupplementPlanData = { recommendations: SupplementRecommendationData[] };
 const fallbackFoodPlan: FoodPlanData = {
@@ -1166,7 +1334,13 @@ function FoodScreen({ session, onExit, onOpenDoctor, onOpenShop, onOpenProfile, 
   const [foodPlan, setFoodPlan] = useState<FoodPlanData>(fallbackFoodPlan);
   const [vikruti, setVikruti] = useState('Pitta');
   const [addingItem, setAddingItem] = useState(false);
+  const [scanningMeal, setScanningMeal] = useState(false);
   const [customItems, setCustomItems] = useState<CustomFoodItem[]>([]);
+  useAndroidBack(() => {
+    if (scanningMeal) setScanningMeal(false);
+    else if (addingItem) setAddingItem(false);
+    else onExit();
+  });
   useEffect(() => {
     if (!session?.user.id) return;
     let active = true;
@@ -1184,10 +1358,33 @@ function FoodScreen({ session, onExit, onOpenDoctor, onOpenShop, onOpenProfile, 
     void loadFoodPlan();
     return () => { active = false; };
   }, [session?.user.id]);
+  useEffect(() => {
+    if (!session?.user.id) return;
+    let active = true;
+    async function loadTodayItems() {
+      const { data, error } = await supabase.from('food_intake_items').select('id, meal, name, servings, serving_label, calories, protein, fat, source').eq('user_id', session!.user.id).eq('eaten_on', localDateKey(new Date())).order('created_at', { ascending: true });
+      if (!active || error || !Array.isArray(data)) return;
+      setCustomItems(data.map(item => ({ id: String(item.id), meal: item.meal as FoodMealKey, name: String(item.name), servings: Number(item.servings), servingLabel: item.serving_label || undefined, calories: Number(item.calories), protein: Number(item.protein), fat: Number(item.fat), source: item.source as FoodItemSource })));
+    }
+    void loadTodayItems();
+    return () => { active = false; };
+  }, [session?.user.id]);
   const completedCount = Object.values(completed).filter(Boolean).length;
   const percentage = Math.round(completedCount / 3 * 100);
   const toggleLog = (key: FoodLogKey) => setCompleted(current => ({ ...current, [key]: !current[key] }));
-  if (addingItem) return <AddFoodItemScreen onBack={() => setAddingItem(false)} onSave={item => { setCustomItems(current => [...current, item]); setAddingItem(false); setTab('tracking'); }} />;
+  async function saveFoodItems(items: CustomFoodItem[]) {
+    if (!session?.user.id) { setCustomItems(current => [...current, ...items]); return; }
+    const payload = items.map(item => ({ user_id: session.user.id, eaten_on: localDateKey(new Date()), meal: item.meal, name: item.name, servings: item.servings, serving_label: item.servingLabel ?? null, calories: item.calories, protein: item.protein, fat: item.fat, source: item.source ?? 'manual' }));
+    const { data, error } = await supabase.from('food_intake_items').insert(payload).select('id, meal, name, servings, serving_label, calories, protein, fat, source');
+    if (error || !data) { setCustomItems(current => [...current, ...items]); return; }
+    setCustomItems(current => [...current, ...data.map(item => ({ id: String(item.id), meal: item.meal as FoodMealKey, name: String(item.name), servings: Number(item.servings), servingLabel: item.serving_label || undefined, calories: Number(item.calories), protein: Number(item.protein), fat: Number(item.fat), source: item.source as FoodItemSource }))]);
+  }
+  async function removeCustomItem(id: string) {
+    setCustomItems(current => current.filter(item => item.id !== id));
+    if (session?.user.id && /^[0-9a-f-]{36}$/i.test(id)) await supabase.from('food_intake_items').delete().eq('id', id).eq('user_id', session.user.id);
+  }
+  if (addingItem) return <AddFoodItemScreen onBack={() => setAddingItem(false)} onSave={item => { void saveFoodItems([{ ...item, source: 'manual' }]); setAddingItem(false); setTab('tracking'); }} />;
+  if (scanningMeal) return <ScanMealScreen onBack={() => setScanningMeal(false)} onAddManual={() => { setScanningMeal(false); setAddingItem(true); }} onLog={items => { void saveFoodItems(items); setScanningMeal(false); setTab('tracking'); }} />;
   return <SafeAreaView style={styles.foodSafe}>
     <StatusBar style="dark" />
     <View style={styles.foodHeader}>
@@ -1196,7 +1393,7 @@ function FoodScreen({ session, onExit, onOpenDoctor, onOpenShop, onOpenProfile, 
     </View>
     {tab === 'recommendations'
       ? <FoodRecommendations plan={foodPlan} completed={completed} percentage={percentage} onToggle={toggleLog} />
-      : <FoodTracking plan={foodPlan} completed={completed} customItems={customItems} onRemoveMeal={toggleLog} onRemoveCustom={id => setCustomItems(current => current.filter(item => item.id !== id))} onAddItem={() => setAddingItem(true)} />}
+      : <FoodTracking plan={foodPlan} completed={completed} customItems={customItems} onRemoveMeal={toggleLog} onRemoveCustom={id => void removeCustomItem(id)} onAddItem={() => setAddingItem(true)} onScanMeal={() => setScanningMeal(true)} />}
     <View style={styles.foodBottomNav}><HomePreNav label="Home" active onPress={onExit} /><HomePreNav label="Doctor" onPress={onOpenDoctor} /><HomePreNav label="AI" onPress={onOpenAI} /><HomePreNav label="Shop" onPress={onOpenShop} /><HomePreNav label="Profile" onPress={onOpenProfile} /></View>
   </SafeAreaView>;
 }
@@ -1219,16 +1416,16 @@ const mealNutrition: Record<FoodLogKey, FoodNutrition> = {
   evening: { calories: 360, protein: 10, fat: 8 },
 };
 
-function FoodTracking({ plan, completed, customItems, onRemoveMeal, onRemoveCustom, onAddItem }: { plan: FoodPlanData; completed: Record<FoodLogKey, boolean>; customItems: CustomFoodItem[]; onRemoveMeal: (key: FoodLogKey) => void; onRemoveCustom: (id: string) => void; onAddItem: () => void }) {
+function FoodTracking({ plan, completed, customItems, onRemoveMeal, onRemoveCustom, onAddItem, onScanMeal }: { plan: FoodPlanData; completed: Record<FoodLogKey, boolean>; customItems: CustomFoodItem[]; onRemoveMeal: (key: FoodLogKey) => void; onRemoveCustom: (id: string) => void; onAddItem: () => void; onScanMeal: () => void }) {
   const mealRows = (Object.keys(completed) as FoodLogKey[]).filter(key => completed[key]).map(key => ({ id: key, key, label: key === 'morning' ? 'MOR' : key === 'midday' ? 'MID' : 'EVE', name: plan.meals[key].meal, ...mealNutrition[key] }));
   const customRows = customItems.map(item => ({ id: item.id, key: null, label: item.meal === 'morning' ? 'MOR' : item.meal === 'midday' ? 'MID' : item.meal === 'evening' ? 'EVE' : 'SNK', name: item.name, calories: item.calories * item.servings, protein: item.protein * item.servings, fat: item.fat * item.servings }));
   const rows = [...mealRows, ...customRows];
   const totals = rows.reduce((sum, item) => ({ calories: sum.calories + item.calories, protein: sum.protein + item.protein, fat: sum.fat + item.fat }), { calories: 0, protein: 0, fat: 0 });
   return <ScrollView style={styles.foodBody} contentContainerStyle={styles.foodTrackingContent} showsVerticalScrollIndicator={false}>
     <View style={styles.foodMacroRow}><FoodMacroCard value={totals.calories} goal={1800} label="CALORIES" color="#43825F" /><FoodMacroCard value={totals.protein} goal={55} label="PROTEIN" color="#164D39" /><FoodMacroCard value={totals.fat} goal={45} label="FAT" color="#C89335" /></View>
+    <View style={styles.foodTrackingActions}><Pressable onPress={onAddItem} style={({ pressed }) => [styles.foodManualButton, pressed && styles.pressed]}><Text style={styles.foodManualPlus}>＋</Text><Text style={styles.foodManualText}>Add manually</Text></Pressable><Pressable onPress={onScanMeal} style={({ pressed }) => [styles.foodScanButton, pressed && styles.pressed]}><Text style={styles.foodScanIcon}>⌗</Text><Text style={styles.foodScanText}>Scan a meal</Text></Pressable></View>
     <View style={styles.foodSectionHeading}><Text style={styles.foodSectionLabel}>TODAY’S ITEMS</Text><Text style={styles.foodItemCount}>{rows.length} {rows.length === 1 ? 'item' : 'items'}</Text></View>
     <View style={styles.foodLogList}>{rows.map(row => <View key={row.id} style={styles.foodTrackedRow}><View style={styles.foodTrackedBadge}><Text style={styles.foodTrackedBadgeText}>{row.label}</Text></View><View style={styles.foodLogCopy}><Text numberOfLines={1} style={styles.foodTrackedName}>{row.name}</Text><Text style={styles.foodTrackedMeta}>{row.calories} kcal · P {row.protein}g · F {row.fat}g</Text></View><Pressable accessibilityLabel={`Remove ${row.name}`} onPress={() => row.key ? onRemoveMeal(row.key) : onRemoveCustom(row.id)} style={styles.foodRemoveButton}><Text style={styles.foodRemoveText}>×</Text></Pressable></View>)}</View>
-    <Pressable onPress={onAddItem} style={({ pressed }) => [styles.foodAddItemButton, pressed && styles.pressed]}><Text style={styles.foodAddItemPlus}>＋</Text><Text style={styles.foodAddItemText}>Add an item</Text></Pressable>
     <Text style={styles.foodSectionLabel}>THIS WEEK</Text>
     <View style={styles.foodWeekCard}><View style={styles.foodBars}>{[72, 82, 56, 82, 52, 8, 7].map((height, index) => <View key={index} style={styles.foodBarColumn}><View style={[styles.foodBar, { height, backgroundColor: index === 2 || index === 4 ? '#C89335' : index > 4 ? '#E7E1D6' : '#43825F' }]} /><Text style={styles.foodBarLabel}>{['M','T','W','T','F','S','S'][index]}</Text></View>)}</View><View style={styles.foodWeekDivider} /><View style={styles.foodWeekSummary}><Text style={styles.foodWeekLabel}>Weekly adherence</Text><Text style={styles.foodWeekValue}>78%</Text></View></View>
   </ScrollView>;
@@ -1237,6 +1434,65 @@ function FoodTracking({ plan, completed, customItems, onRemoveMeal, onRemoveCust
 function FoodMacroCard({ value, goal, label, color }: { value: number; goal: number; label: string; color: string }) {
   const percentage = Math.min(100, Math.round(value / goal * 100));
   return <View style={styles.foodMacroCard}><View style={styles.foodMacroRing}>{Array.from({ length: 32 }, (_, index) => <View key={index} style={[styles.foodMacroSegment, { backgroundColor: index < Math.round(32 * percentage / 100) ? color : '#E6E2D9', transform: [{ rotate: `${index * 11.25}deg` }, { translateY: -21 }] }]} />)}<View style={styles.foodMacroCenter}><Text style={styles.foodMacroValue}>{value}</Text></View></View><Text style={styles.foodMacroLabel}>{label}</Text><Text style={styles.foodMacroGoal}>of {goal}{label === 'CALORIES' ? '' : ' g'}</Text></View>;
+}
+
+function parseScannedFoodItems(value: unknown): ScannedFoodItem[] | null {
+  const source = value && typeof value === 'object' && Array.isArray((value as Record<string, unknown>).items) ? (value as { items: unknown[] }).items : null;
+  if (!source || !source.length) return null;
+  const parsed = source.slice(0, 8).map((value, index) => {
+    if (!value || typeof value !== 'object') return null;
+    const item = value as Record<string, unknown>;
+    const calories = Number(item.calories); const protein = Number(item.protein); const fat = Number(item.fat);
+    if (typeof item.name !== 'string' || !item.name.trim() || !Number.isFinite(calories) || !Number.isFinite(protein) || !Number.isFinite(fat)) return null;
+    const confidence = item.confidence === 'high' || item.confidence === 'likely' || item.confidence === 'low' ? item.confidence : 'likely';
+    return { id: `scan-${Date.now()}-${index}`, name: item.name.trim(), servingLabel: typeof item.serving_label === 'string' && item.serving_label.trim() ? item.serving_label.trim() : '1 serving each', calories: Math.max(0, Math.round(calories)), protein: Math.max(0, Math.round(protein)), fat: Math.max(0, Math.round(fat)), confidence, selected: confidence !== 'low', servings: 1 } satisfies ScannedFoodItem;
+  });
+  return parsed.every(Boolean) ? parsed as ScannedFoodItem[] : null;
+}
+
+function ScanFrame({ imageUri, recognising = false }: { imageUri: string | null; recognising?: boolean }) {
+  return <View style={styles.scanFrame}>{imageUri ? <Image source={{ uri: imageUri }} resizeMode="cover" style={[styles.scanPreview, recognising && styles.scanPreviewRecognising]} /> : <View style={styles.scanEmptyPlate}><Text style={styles.scanEmptyGlyph}>⌾</Text><Text style={styles.scanEmptyText}>Place the whole meal in frame</Text></View>}<View style={[styles.scanCorner, styles.scanCornerTopLeft]} /><View style={[styles.scanCorner, styles.scanCornerTopRight]} /><View style={[styles.scanCorner, styles.scanCornerBottomLeft]} /><View style={[styles.scanCorner, styles.scanCornerBottomRight]} />{recognising ? <View style={styles.scanRecognisingOverlay}><Text style={styles.scanRecognisingText}>Recognising the plate…</Text><View style={styles.scanProgressTrack}><View style={styles.scanProgressFill} /></View></View> : null}</View>;
+}
+
+function ScanMealScreen({ onBack, onAddManual, onLog }: { onBack: () => void; onAddManual: () => void; onLog: (items: CustomFoodItem[]) => void }) {
+  const [stage, setStage] = useState<'capture' | 'recognising' | 'confirm'>('capture');
+  const [imageUri, setImageUri] = useState<string | null>(null);
+  const [items, setItems] = useState<ScannedFoodItem[]>([]);
+  const [error, setError] = useState('');
+  async function scanErrorMessage(functionError: unknown, data: unknown) {
+    if (data && typeof data === 'object' && typeof (data as Record<string, unknown>).error === 'string') return String((data as Record<string, unknown>).error);
+    if (functionError instanceof FunctionsHttpError) { try { const payload = await functionError.context.json(); if (typeof payload?.error === 'string') return payload.error; } catch {} }
+    return functionError instanceof Error ? functionError.message : '';
+  }
+  async function chooseImage(source: 'camera' | 'library') {
+    setError('');
+    if (source === 'camera') {
+      const permission = await ImagePicker.requestCameraPermissionsAsync();
+      if (!permission.granted) { setError('Camera access is needed to photograph a meal.'); return; }
+    }
+    const result = source === 'camera'
+      ? await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], cameraType: ImagePicker.CameraType.back, quality: 0.7, base64: true })
+      : await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.7, base64: true });
+    if (result.canceled) return;
+    const asset = result.assets[0];
+    if (!asset?.uri || !asset.base64) { setError('The selected photo could not be prepared. Please try another image.'); return; }
+    setImageUri(asset.uri); setStage('recognising');
+    const { data, error: functionError } = await supabase.functions.invoke('scan-food-meal', { body: { image_base64: asset.base64, mime_type: asset.mimeType || 'image/jpeg' } });
+    const recognised = parseScannedFoodItems(data);
+    if (functionError || !recognised) { setStage('capture'); setError(await scanErrorMessage(functionError, data) || 'We could not recognise this meal. Try a brighter, clearer photo.'); return; }
+    setItems(recognised); setStage('confirm');
+  }
+  function updateItem(id: string, updates: Partial<ScannedFoodItem>) { setItems(current => current.map(item => item.id === id ? { ...item, ...updates } : item)); }
+  function retake() { setStage('capture'); setImageUri(null); setItems([]); setError(''); }
+  const selected = items.filter(item => item.selected);
+  const totals = selected.reduce((sum, item) => ({ calories: sum.calories + item.calories * item.servings, protein: sum.protein + item.protein * item.servings, fat: sum.fat + item.fat * item.servings }), { calories: 0, protein: 0, fat: 0 });
+  const logSelected = () => onLog(selected.map(item => ({ id: `${Date.now()}-${item.id}`, meal: 'midday', name: item.name, servings: item.servings, servingLabel: item.servingLabel, calories: item.calories, protein: item.protein, fat: item.fat, source: 'scan' })));
+  return <SafeAreaView style={styles.scanSafe}><StatusBar style="light" /><View style={styles.scanScreen}>
+    <View style={styles.scanHeader}><Pressable accessibilityLabel="Close meal scanner" onPress={onBack} style={styles.scanClose}><Text style={styles.scanCloseText}>×</Text></Pressable><View><Text style={styles.scanEyebrow}>{stage === 'capture' ? 'POINT AND SHOOT' : stage === 'recognising' ? 'RECOGNISING' : 'CHECK AND CONFIRM'}</Text><Text style={styles.scanTitle}>Scan a meal</Text></View></View>
+    {stage === 'capture' ? <View style={styles.scanCaptureBody}><ScanFrame imageUri={imageUri} /><Text style={styles.scanHelp}>Frame the whole plate in good light. Separate items are recognised individually, so a tall works too.</Text>{error ? <Text style={styles.scanError}>{error}</Text> : null}<View style={styles.scanCaptureActions}><Pressable onPress={() => void chooseImage('camera')} style={styles.scanTakePhoto}><Text style={styles.scanTakePhotoIcon}>▣</Text><Text style={styles.scanTakePhotoText}>Take photo</Text></Pressable><Pressable onPress={() => void chooseImage('library')} style={styles.scanUpload}><Text style={styles.scanUploadText}>Upload</Text></Pressable></View></View> : null}
+    {stage === 'recognising' ? <View style={styles.scanCaptureBody}><ScanFrame imageUri={imageUri} recognising /><View style={styles.scanSkeleton}><View style={[styles.scanSkeletonLine, { width: '58%' }]} /><View style={[styles.scanSkeletonLine, { width: '34%' }]} /></View><View style={styles.scanSkeleton}><View style={[styles.scanSkeletonLine, { width: '46%' }]} /><View style={[styles.scanSkeletonLine, { width: '40%' }]} /></View><View style={styles.scanSkeleton}><View style={[styles.scanSkeletonLine, { width: '64%' }]} /><View style={[styles.scanSkeletonLine, { width: '29%' }]} /></View></View> : null}
+    {stage === 'confirm' ? <><ScrollView style={styles.scanResultsScroll} contentContainerStyle={styles.scanResultsContent} showsVerticalScrollIndicator={false}><ScanFrame imageUri={imageUri} /><View style={styles.scanResultsHeading}><Text style={styles.scanResultsLabel}>RECOGNISED</Text><Text style={styles.scanResultsCount}>{selected.length} of {items.length} selected</Text></View>{items.map(item => <View key={item.id} style={styles.scanResultCard}><View style={styles.scanResultTop}><Pressable accessibilityRole="checkbox" accessibilityState={{ checked: item.selected }} accessibilityLabel={`Include ${item.name}`} onPress={() => updateItem(item.id, { selected: !item.selected })} style={[styles.scanResultCheck, item.selected && styles.scanResultCheckSelected]}><Text style={styles.scanResultCheckText}>{item.selected ? '✓' : ''}</Text></Pressable><View style={styles.scanResultCopy}><Text style={styles.scanResultName}>{item.name}</Text><Text style={styles.scanResultMacros}>{item.calories} kcal · P {item.protein}g · F {item.fat}g</Text></View><View style={[styles.scanConfidence, item.confidence === 'likely' && styles.scanConfidenceLikely, item.confidence === 'low' && styles.scanConfidenceLow]}><Text style={styles.scanConfidenceText}>{item.confidence.toUpperCase()}</Text></View></View><View style={styles.scanResultDivider} /><View style={styles.scanServingRow}><Text style={styles.scanServingText}>{item.servingLabel}</Text><View style={styles.scanQuantity}><Pressable accessibilityLabel={`Decrease ${item.name} quantity`} onPress={() => updateItem(item.id, { servings: Math.max(1, item.servings - 1) })} style={styles.scanQuantityButton}><Text style={styles.scanQuantityButtonText}>−</Text></Pressable><Text style={styles.scanQuantityValue}>{item.servings}</Text><Pressable accessibilityLabel={`Increase ${item.name} quantity`} onPress={() => updateItem(item.id, { servings: item.servings + 1 })} style={styles.scanQuantityButton}><Text style={styles.scanQuantityButtonText}>+</Text></Pressable></View></View></View>)}<Pressable onPress={onAddManual}><Text style={styles.scanMissing}>Something missing? <Text style={styles.scanMissingLink}>Add it manually</Text></Text></Pressable></ScrollView><View style={styles.scanFooter}><View style={styles.scanFooterSummary}><Text style={styles.scanFooterLabel}>Adds to today</Text><Text style={styles.scanFooterValue}>{totals.calories} kcal · P {totals.protein}g · F {totals.fat}g</Text></View><View style={styles.scanFooterActions}><Pressable onPress={retake} style={styles.scanRetake}><Text style={styles.scanRetakeText}>Retake</Text></Pressable><Pressable disabled={!selected.length} onPress={logSelected} style={[styles.scanLog, !selected.length && styles.scanLogDisabled]}><Text style={styles.scanLogText}>Log {selected.length} {selected.length === 1 ? 'item' : 'items'}</Text></Pressable></View></View></> : null}
+  </View></SafeAreaView>;
 }
 
 function AddFoodItemScreen({ onBack, onSave }: { onBack: () => void; onSave: (item: CustomFoodItem) => void }) {
@@ -1374,6 +1630,7 @@ function YogaScreen({ session, onExit, onOpenDoctor, onOpenShop, onOpenProfile, 
   const [paused, setPaused] = useState(false);
   const [transitionSeconds, setTransitionSeconds] = useState(5);
   const [completionSeconds, setCompletionSeconds] = useState(5);
+  useAndroidBack(() => { if (flow === 'overview') onExit(); else returnToYoga(); });
   useEffect(() => {
     if (!session?.user.id) return;
     let active = true;
@@ -1599,6 +1856,19 @@ function CompletedHome({ firstName, percentages, dominantDosha, vikritiConclusio
 type ShopOrderItem = { product_id: string; quantity: number; unit_price: number; product: { name: string; weight: string; icon: string } | null };
 type ShopOrder = { id: string; total_amount: number; status: string; created_at: string; items: ShopOrderItem[] };
 type BookedAppointment = { id: string; doctor_name: string; doctor_initials: string; appointment_date: string; appointment_time: string; consultation_type: string; status: string; discussion_summary: string | null; prescription: string | null };
+const demoOrdersKey = (userId: string) => `ayurnidaan:demo-orders:${userId}`;
+const demoAppointmentsKey = (userId: string) => `ayurnidaan:demo-appointments:${userId}`;
+async function readStoredList<T>(key: string): Promise<T[]> {
+  try {
+    const value = await AsyncStorage.getItem(key);
+    const parsed = value ? JSON.parse(value) : [];
+    return Array.isArray(parsed) ? parsed as T[] : [];
+  } catch { return []; }
+}
+async function prependStoredItem<T>(key: string, item: T) {
+  const current = await readStoredList<T>(key);
+  await AsyncStorage.setItem(key, JSON.stringify([item, ...current]));
+}
 type ProfilePrakriti = 'Vata' | 'Pitta' | 'Kapha' | 'Vata-Pitta' | 'Pitta-Kapha' | 'Vata-Kapha' | 'Vata-Pitta-Kapha';
 type ProfileVikriti = 'Vata' | 'Pitta' | 'Kapha' | 'Vata-Pitta' | 'Pitta-Kapha' | 'Vata-Kapha' | 'Tridosha';
 type ProfileHealthResult = { conclusion: string | null; symptoms: string[] | null; vata_imbalanced: boolean; pitta_imbalanced: boolean; kapha_imbalanced: boolean; completed_at?: string };
@@ -1642,7 +1912,7 @@ function ProfileHub({ session, onExit, onOpenShop, onOpenDoctor, onOpenAI, onRet
   const [loggingOut, setLoggingOut] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuProgress = useRef(new Animated.Value(0)).current;
-  const [view, setView] = useState<'profile' | 'edit' | 'settings' | 'orders' | 'order' | 'appointments' | 'appointment'>('profile');
+  const [view, setView] = useState<'profile' | 'edit' | 'goals' | 'settings' | 'orders' | 'order' | 'appointments' | 'appointment'>('profile');
   const [orders, setOrders] = useState<ShopOrder[]>([]);
   const [selectedOrder, setSelectedOrder] = useState<ShopOrder | null>(null);
   const [loadingOrders, setLoadingOrders] = useState(false);
@@ -1663,6 +1933,11 @@ function ProfileHub({ session, onExit, onOpenShop, onOpenDoctor, onOpenAI, onRet
   const [profileHealth, setProfileHealth] = useState<ProfileHealthResult | null>(null);
   const [profileMetrics, setProfileMetrics] = useState<{ height: number | null; weight: number | null }>({ height: null, weight: null });
   const fullName = session?.user.user_metadata.full_name?.trim() || 'Ayurnidaan User';
+  useAndroidBack(() => {
+    if (menuOpen) setMenuOpen(false);
+    else if (view !== 'profile') setView('profile');
+    else onExit();
+  });
   useEffect(() => { if (session?.user.id) supabase.from('profiles').select('avatar_url, height_cm, weight_kg').eq('user_id', session.user.id).maybeSingle().then(async ({ data }) => { setProfileMetrics({ height: data?.height_cm ?? null, weight: data?.weight_kg ?? null }); if (!data?.avatar_url) return setAvatarUrl(null); const signed = await supabase.storage.from('avatars').createSignedUrl(data.avatar_url, 3600); setAvatarUrl(signed.data?.signedUrl ?? null); }); }, [session?.user.id]);
   useEffect(() => {
     if (!session?.user.id) return;
@@ -1674,15 +1949,33 @@ function ProfileHub({ session, onExit, onOpenShop, onOpenDoctor, onOpenAI, onRet
       if (healthResult.data) setProfileHealth(healthResult.data as ProfileHealthResult);
     });
   }, [session?.user.id]);
-  useEffect(() => { if (!session?.user.id) return; const today = new Date().toISOString().slice(0, 10); Promise.all([supabase.from('shop_orders').select('id', { count: 'exact', head: true }).eq('user_id', session.user.id), supabase.from('appointments').select('id', { count: 'exact', head: true }).eq('user_id', session.user.id).eq('status', 'booked').gte('appointment_date', today)]).then(([orderResult, appointmentResult]) => { setOrderCount(orderResult.count ?? 0); setUpcomingAppointmentCount(appointmentResult.count ?? 0); }); }, [session?.user.id]);
+  useEffect(() => {
+    if (!session?.user.id) return;
+    let active = true;
+    const userId = session.user.id; const today = new Date().toISOString().slice(0, 10);
+    void Promise.all([
+      supabase.from('shop_orders').select('id', { count: 'exact', head: true }).eq('user_id', userId),
+      supabase.from('appointments').select('id', { count: 'exact', head: true }).eq('user_id', userId).eq('status', 'booked').gte('appointment_date', today),
+      readStoredList<ShopOrder>(demoOrdersKey(userId)),
+      readStoredList<BookedAppointment>(demoAppointmentsKey(userId)),
+    ]).then(([orderResult, appointmentResult, storedOrders, storedAppointments]) => {
+      if (!active) return;
+      setOrderCount((orderResult.count ?? 0) + storedOrders.length);
+      setUpcomingAppointmentCount((appointmentResult.count ?? 0) + storedAppointments.filter(item => item.status === 'booked' && item.appointment_date >= today).length);
+    });
+    return () => { active = false; };
+  }, [session?.user.id]);
   async function openOrders() {
     if (!session?.user.id) return;
     setLoadingOrders(true); setView('orders');
     const { data: orderRows } = await supabase.from('shop_orders').select('id, total_amount, status, created_at').eq('user_id', session.user.id).order('created_at', { ascending: false });
     const ids = (orderRows ?? []).map(order => order.id);
     const { data: itemRows } = ids.length ? await supabase.from('shop_order_items').select('order_id, product_id, quantity, unit_price, shop_products(name, weight, icon)').eq('user_id', session.user.id).in('order_id', ids) : { data: [] };
-    setOrders((orderRows ?? []).map(order => ({ ...order, items: (itemRows ?? []).filter(item => item.order_id === order.id).map(item => ({ product_id: item.product_id, quantity: item.quantity, unit_price: item.unit_price, product: Array.isArray(item.shop_products) ? item.shop_products[0] ?? null : item.shop_products })) })));
-    setOrderCount((orderRows ?? []).length);
+    const storedOrders = await readStoredList<ShopOrder>(demoOrdersKey(session.user.id));
+    const databaseOrders = (orderRows ?? []).map(order => ({ ...order, items: (itemRows ?? []).filter(item => item.order_id === order.id).map(item => ({ product_id: item.product_id, quantity: item.quantity, unit_price: item.unit_price, product: Array.isArray(item.shop_products) ? item.shop_products[0] ?? null : item.shop_products })) }));
+    const combinedOrders = [...storedOrders, ...databaseOrders].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    setOrders(combinedOrders);
+    setOrderCount(combinedOrders.length);
     setLoadingOrders(false);
   }
   function showOrder(order: ShopOrder) { setSelectedOrder(order); setView('order'); }
@@ -1690,7 +1983,9 @@ function ProfileHub({ session, onExit, onOpenShop, onOpenDoctor, onOpenAI, onRet
     if (!session?.user.id) return;
     setLoadingAppointments(true); setView('appointments');
     const { data } = await supabase.from('appointments').select('id, doctor_name, doctor_initials, appointment_date, appointment_time, consultation_type, status, discussion_summary, prescription').eq('user_id', session.user.id).order('appointment_date', { ascending: false }).order('created_at', { ascending: false });
-    setAppointments(data ?? []); setUpcomingAppointmentCount((data ?? []).filter(item => item.status === 'booked' && item.appointment_date >= new Date().toISOString().slice(0, 10)).length); setLoadingAppointments(false);
+    const storedAppointments = await readStoredList<BookedAppointment>(demoAppointmentsKey(session.user.id));
+    const combinedAppointments = [...storedAppointments, ...(data ?? [])].sort((a, b) => b.appointment_date.localeCompare(a.appointment_date));
+    setAppointments(combinedAppointments); setUpcomingAppointmentCount(combinedAppointments.filter(item => item.status === 'booked' && item.appointment_date >= new Date().toISOString().slice(0, 10)).length); setLoadingAppointments(false);
   }
   function showAppointment(appointment: BookedAppointment) { setSelectedAppointment(appointment); setView('appointment'); }
   async function openEditProfile() {
@@ -1748,11 +2043,13 @@ function ProfileHub({ session, onExit, onOpenShop, onOpenDoctor, onOpenAI, onRet
   if (view === 'order' && selectedOrder) return <OrderDetails order={selectedOrder} onBack={() => setView('orders')} />;
   if (view === 'appointment' && selectedAppointment) return <AppointmentDetails appointment={selectedAppointment} onBack={() => setView('appointments')} />;
   if (view === 'edit') return <PersonalDetailsScreen avatarUrl={avatarUrl} uploadingAvatar={uploadingAvatar} loading={loadingProfile} error={profileError} name={editName} dob={editDob} phone={session?.user.phone ?? ''} sex={editSex} height={editHeight} weight={editWeight} diet={diet} onBack={() => setView('profile')} onName={setEditName} onDob={setEditDob} onSex={setEditSex} onHeight={setEditHeight} onWeight={setEditWeight} onDiet={setDiet} onChooseAvatar={chooseAvatar} onRemoveAvatar={removeAvatar} onSave={saveProfile} />;
+  if (view === 'goals') return <HealthGoalsScreen session={session} profileEdit onBack={() => setView('profile')} onComplete={() => setView('profile')} />;
   if (view === 'settings') return <PrivacyConsentScreen notifications={notifications} healthPersonalisation={healthPersonalisation} aiContext={aiContext} doctorSharing={doctorSharing} saving={savingSettings} error={settingsError} onBack={() => setView('profile')} onNotifications={setNotifications} onHealthPersonalisation={setHealthPersonalisation} onAiContext={setAiContext} onDoctorSharing={setDoctorSharing} onSave={saveSettings} />;
   if (view === 'appointments') return <AppointmentsScreen appointments={appointments} loading={loadingAppointments} onBack={() => setView('profile')} onSelect={showAppointment} onBook={onOpenDoctor} />;
   if (view === 'orders') return <OrdersScreen orders={orders} loading={loadingOrders} onBack={() => setView('profile')} onSelect={showOrder} onShop={onOpenShop} />;
   const menuRows = [
     { label: 'Edit personal details', detail: 'Name, contact, diet', onPress: openEditProfile },
+    { label: 'Health goals', detail: `${Array.isArray(session?.user.user_metadata.health_goals) ? session.user.user_metadata.health_goals.length : 0} selected`, onPress: () => setView('goals') },
     { label: 'Privacy and consent', detail: 'Data sharing controls', onPress: openSettings },
     { label: 'My orders', detail: `${orderCount} ${orderCount === 1 ? 'order' : 'orders'}`, onPress: openOrders },
     { label: 'My appointments', detail: `${upcomingAppointmentCount} upcoming`, onPress: openAppointments },
@@ -1804,16 +2101,120 @@ function formatOrderDate(value: string) { return new Date(value).toLocaleString(
 function formatOrderStatus(value: string) { return value.split('-').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' '); }
 
 type ChatMessage = { role: 'user' | 'assistant'; content: string; options?: string[] };
-function AIChat({ onExit, onOpenShop, onOpenDoctor, onOpenProfile }: { onExit: () => void; onOpenShop: () => void; onOpenDoctor: () => void; onOpenProfile: () => void }) {
+function RedFlagSafeguardModal({ visible, userText, onClose, onDoctor }: { visible: boolean; userText: string; onClose: () => void; onDoctor: () => void }) {
+  return <Modal transparent visible={visible} animationType="slide" onRequestClose={onClose} statusBarTranslucent>
+    <View style={safeguardStyles.backdrop}>
+      <Pressable accessibilityLabel="Close safeguard" onPress={onClose} style={safeguardStyles.dismissArea} />
+      <View style={safeguardStyles.sheet}>
+        <View style={safeguardStyles.handle} />
+        <View style={safeguardStyles.headingRow}><View style={safeguardStyles.shield}><Text style={safeguardStyles.shieldText}>!</Text></View><View style={safeguardStyles.headingCopy}><Text style={safeguardStyles.eyebrow}>ASSISTANT SAFEGUARD</Text><Text style={safeguardStyles.title}>This should be looked at by a doctor</Text></View></View>
+        <Text style={safeguardStyles.copy}>What you described may need an examination, tests, or urgent treatment. The assistant only builds your current health picture from symptoms—it cannot examine you, order tests, or prescribe, so it will not continue this chat.</Text>
+        <View style={safeguardStyles.quote}><Text style={safeguardStyles.quoteLabel}>YOU WROTE</Text><Text style={safeguardStyles.quoteText}>{userText}</Text></View>
+        <View style={safeguardStyles.bulletRow}><Text style={safeguardStyles.bullet}>•</Text><Text style={safeguardStyles.bulletText}>A registered Ayurveda doctor can review your symptoms and any reports you upload.</Text></View>
+        <View style={safeguardStyles.bulletRow}><Text style={safeguardStyles.bullet}>•</Text><Text style={safeguardStyles.bulletText}>Your description can be copied into the consultation so you do not have to repeat it.</Text></View>
+        <Pressable onPress={() => { void AsyncStorage.setItem(redFlagDoctorHandoffKey, userText).finally(() => { onClose(); onDoctor(); }); }} style={safeguardStyles.doctorButton}><Text style={safeguardStyles.doctorButtonText}>♧  Book a doctor instead</Text></Pressable>
+        <Pressable onPress={onClose} style={safeguardStyles.closeButton}><Text style={safeguardStyles.closeButtonText}>Close</Text></Pressable>
+        <View style={safeguardStyles.divider} /><Text style={safeguardStyles.emergency}>If this is an emergency, call 112 or go to the nearest hospital. Do not wait for a consultation.</Text>
+      </View>
+    </View>
+  </Modal>;
+}
+
+function AIChat({ session, onExit, onOpenShop, onOpenDoctor, onOpenProfile }: { session: Session | null; onExit: () => void; onOpenShop: () => void; onOpenDoctor: () => void; onOpenProfile: () => void }) {
   const [messages, setMessages] = useState<ChatMessage[]>([{ role: 'assistant', content: 'Namaste! How can I support your wellness journey today?' }]);
-  const [input, setInput] = useState(''); const [sending, setSending] = useState(false);
-  async function send() { const content = input.trim(); if (!content || sending) return; const next: ChatMessage[] = [...messages, { role: 'user', content }]; setMessages(next); setInput(''); setSending(true); const { data } = await supabase.functions.invoke('ai-chat', { body: { messages: next } }); setMessages(current => [...current, { role: 'assistant', content: data?.reply || 'Upcoming feature' }]); setSending(false); }
-  return <SafeAreaView style={styles.aiSafe}><StatusBar style="dark" /><KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={0}><View style={styles.aiHeader}><Text style={styles.aiTitle}>Ayurnidaan AI</Text><Text style={styles.aiSubtitle}>Your Ayurveda wellness assistant</Text></View><ScrollView style={styles.flex} contentContainerStyle={styles.chatMessages} keyboardShouldPersistTaps="handled">{messages.map((message, index) => <View key={index} style={[styles.chatBubble, message.role === 'user' ? styles.userBubble : styles.assistantBubble]}><Text style={[styles.chatText, message.role === 'user' && styles.userChatText]}>{message.content}</Text></View>)}{sending ? <View style={[styles.chatBubble, styles.assistantBubble]}><ActivityIndicator color="#075A3F" /></View> : null}</ScrollView><View style={styles.chatComposer}><TextInput value={input} onChangeText={setInput} onSubmitEditing={send} placeholder="Ask about your wellness..." placeholderTextColor="#929993" returnKeyType="send" style={styles.chatInput} /><Pressable onPress={send} style={styles.chatSend}><Text style={styles.chatSendText}>➤</Text></Pressable></View></KeyboardAvoidingView><View style={styles.bottomNav}><NavItem icon="⌂" label="Home" onPress={onExit} /><NavItem icon="✚" label="Doctor" onPress={onOpenDoctor} /><NavItem icon="♧" label="AI" active /><NavItem icon="🛍" label="Shop" onPress={onOpenShop} /><NavItem icon="♙" label="Profile" onPress={onOpenProfile} /></View></SafeAreaView>;
+  const [input, setInput] = useState(''); const [sending, setSending] = useState(false); const [inputHeight, setInputHeight] = useState(44);
+  const [redFlagText, setRedFlagText] = useState(''); const [error, setError] = useState('');
+  const scrollRef = useRef<ScrollView>(null);
+  useEffect(() => {
+    if (!session?.user.id) return;
+    let active = true;
+    void supabase.from('prakriti_assessments').select('vata_percentage, pitta_percentage, kapha_percentage').eq('user_id', session.user.id).order('completed_at', { ascending: false }).limit(1).maybeSingle().then(({ data }) => {
+      if (!active || !data) return;
+      const options = getPrakritiComplaintOptions({ vataPercentage: Number(data.vata_percentage), pittaPercentage: Number(data.pitta_percentage), kaphaPercentage: Number(data.kapha_percentage) });
+      setMessages(current => current.length === 1 && current[0].role === 'assistant' ? [{ ...current[0], options }] : current);
+    });
+    return () => { active = false; };
+  }, [session?.user.id]);
+  useAndroidBack(onExit);
+  async function sendAnswer(answer: string) {
+    const content = answer.trim();
+    if (!content || sending) return;
+    const next: ChatMessage[] = [...messages, { role: 'user', content }];
+    setMessages(next); setInput(''); setInputHeight(44); setError('');
+    if (isRedFlagMessage(content)) { setRedFlagText(content); return; }
+    setSending(true);
+    const requestMessages = next.map(message => ({ role: message.role, content: message.content }));
+    const { data, error: functionError } = await supabase.functions.invoke('ai-chat', { body: { messages: requestMessages } });
+    if (data?.red_flag === true) { setRedFlagText(content); setSending(false); return; }
+    if (functionError || typeof data?.reply !== 'string') { setError('AI Vaidya could not respond. Please try again.'); setSending(false); return; }
+    setMessages(current => [...current, { role: 'assistant', content: data.reply }]); setSending(false);
+  }
+  function send() { void sendAnswer(input); }
+  return <SafeAreaView style={styles.aiSafe}><StatusBar style="dark" /><KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={0}><View style={styles.aiHeader}><Text style={styles.aiTitle}>AI Vaidya</Text><Text style={styles.aiSubtitle}>Your Ayurveda wellness assistant</Text></View><ScrollView ref={scrollRef} style={styles.flex} contentContainerStyle={styles.chatMessages} automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'} keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'} keyboardShouldPersistTaps="handled" onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}>{messages.map((message, index) => <View key={index} style={[styles.chatMessageGroup, message.role === 'user' && styles.userMessageGroup]}><View style={[styles.chatBubble, styles.currentHealthMessageBubble, message.role === 'user' ? styles.userBubble : styles.assistantBubble]}><Text style={[styles.chatText, message.role === 'user' && styles.userChatText]}>{message.content}</Text></View>{message.role === 'assistant' && message.options?.length ? <View style={styles.answerSuggestionList}>{message.options.map(option => <Pressable key={option} disabled={sending || index !== messages.length - 1} onPress={() => void sendAnswer(option)} style={({ pressed }) => [styles.answerSuggestion, (sending || index !== messages.length - 1) && styles.answerSuggestionDisabled, pressed && styles.pressed]}><Text style={styles.answerSuggestionText}>{option}</Text></Pressable>)}</View> : null}</View>)}{sending ? <View style={[styles.chatBubble, styles.assistantBubble]}><ActivityIndicator color="#075A3F" /></View> : null}{error ? <Text style={styles.error}>{error}</Text> : null}</ScrollView><View style={styles.chatComposer}><TextInput value={input} onChangeText={setInput} editable={!sending} multiline scrollEnabled={inputHeight >= 120} onFocus={() => requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: true }))} onContentSizeChange={(event) => { setInputHeight(Math.max(44, Math.min(120, event.nativeEvent.contentSize.height))); requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: true })); }} placeholder="Ask about your wellness..." placeholderTextColor="#929993" style={[styles.chatInput, styles.currentHealthChatInput, { height: inputHeight }]} /><Pressable disabled={sending} onPress={send} style={[styles.chatSend, sending && styles.chatSendDisabled]}><Text style={styles.chatSendText}>➤</Text></Pressable></View></KeyboardAvoidingView><View style={styles.bottomNav}><NavItem icon="⌂" label="Home" onPress={onExit} /><NavItem icon="✚" label="Doctor" onPress={onOpenDoctor} /><NavItem icon="♧" label="AI" active /><NavItem icon="🛍" label="Shop" onPress={onOpenShop} /><NavItem icon="♙" label="Profile" onPress={onOpenProfile} /></View><RedFlagSafeguardModal visible={Boolean(redFlagText)} userText={redFlagText} onClose={() => setRedFlagText('')} onDoctor={onOpenDoctor} /></SafeAreaView>;
 }
 
 type Product = { id: string; name: string; weight: string; price: number; mrp: number; icon: string; categories: string[]; tags: string[]; description: string; rating: string };
 type UserAddress = { id: string; label: string; recipient_name: string; address_line: string; city: string; state: string; postcode: string; is_default: boolean };
 type PlacedShopOrder = { id: string; itemCount: number; total: number; addressLabel: string };
+type PaymentMethod = 'upi' | 'card' | 'netbanking';
+type PaymentPurpose = 'appointment' | 'shop';
+type PaymentSummary = { icon: string; title: string; detail: string };
+// Temporary launch mode: retain the full Razorpay flow below, but fulfil orders
+// immediately until live payment collection is switched back on.
+const PAYMENT_PROCESSING_ENABLED = false;
+
+function PaymentScreen({ purpose, amount, summary, requestPayload, onBack, onPaid }: { purpose: PaymentPurpose; amount: number; summary: PaymentSummary; requestPayload: Record<string, unknown>; onBack: () => void; onPaid: (resourceId: string) => void | Promise<void> }) {
+  const [method, setMethod] = useState<PaymentMethod>('upi');
+  const [coupon, setCoupon] = useState('');
+  const [paying, setPaying] = useState(false); const [error, setError] = useState('');
+  const methods: { key: PaymentMethod; title: string; detail: string; aside?: string }[] = [
+    { key: 'upi', title: 'UPI', detail: 'GPay, PhonePe, Paytm or any UPI app', aside: 'Fastest' },
+    { key: 'card', title: 'Card', detail: 'Credit or debit · Visa, Mastercard, RuPay' },
+    { key: 'netbanking', title: 'Net banking', detail: 'All major Indian banks' },
+  ];
+  async function paymentErrorMessage(functionError: unknown, data: unknown) {
+    if (data && typeof data === 'object' && typeof (data as Record<string, unknown>).error === 'string') return String((data as Record<string, unknown>).error);
+    if (functionError instanceof FunctionsHttpError) { try { const payload = await functionError.context.json(); if (typeof payload?.error === 'string') return payload.error; } catch {} }
+    return functionError instanceof Error ? functionError.message : '';
+  }
+  async function pay() {
+    setPaying(true); setError('');
+    try {
+      const redirectUrl = AuthSession.makeRedirectUri({ scheme: process.env.EXPO_PUBLIC_APP_ENV === 'development' ? 'ayurnidaan-dev' : 'ayurnidaan', path: 'payment-callback' });
+      if (!PAYMENT_PROCESSING_ENABLED) {
+        await onPaid(`demo-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+        return;
+      }
+      const { data, error: createError } = await supabase.functions.invoke('razorpay-payment', { body: { action: 'create', purpose, redirect_url: redirectUrl, ...requestPayload } });
+      if (createError || typeof data?.checkout_url !== 'string' || typeof data?.payment_ref !== 'string') throw new Error(await paymentErrorMessage(createError, data) || 'Could not start the payment.');
+      if (Platform.OS !== 'web') {
+        if (!data.checkout_options || typeof data.checkout_options !== 'object') throw new Error('Native checkout configuration is unavailable.');
+        const payment = await openNativeRazorpayCheckout(data.checkout_options as RazorpayCheckoutOptions);
+        const { data: verifiedData, error: verificationError } = await supabase.functions.invoke('razorpay-payment', { body: { action: 'verify_native', payment_ref: data.payment_ref, ...payment } });
+        const resourceId = verifiedData?.payment?.resource_id;
+        if (verificationError || verifiedData?.payment?.status !== 'paid' || typeof resourceId !== 'string') throw new Error(await paymentErrorMessage(verificationError, verifiedData) || 'Payment verification failed.');
+        onPaid(resourceId);
+        return;
+      }
+      const result = await WebBrowser.openAuthSessionAsync(data.checkout_url, redirectUrl);
+      const callbackStatus = result.type === 'success' ? new URL(result.url).searchParams.get('status') : null;
+      if (result.type !== 'success' || callbackStatus !== 'success') { setError('Payment was cancelled. No amount was charged.'); return; }
+      let paidResource = '';
+      for (let attempt = 0; attempt < 8 && !paidResource; attempt += 1) {
+        const { data: statusData } = await supabase.functions.invoke('razorpay-payment', { body: { action: 'status', payment_ref: data.payment_ref } });
+        if (statusData?.payment?.status === 'paid' && typeof statusData.payment.resource_id === 'string') paidResource = statusData.payment.resource_id;
+        else if (attempt < 7) await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+      if (!paidResource) throw new Error('Payment verification is still pending. Please check again shortly.');
+      onPaid(paidResource);
+    } catch (paymentError) {
+      const nativeError = paymentError as { description?: unknown };
+      setError(typeof nativeError?.description === 'string' ? nativeError.description : paymentError instanceof Error ? paymentError.message : 'Payment was cancelled or could not be completed.');
+    }
+    finally { setPaying(false); }
+  }
+  return <SafeAreaView style={styles.paymentSafe}><StatusBar style="dark" /><KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.paymentScreen}><ScrollView contentContainerStyle={styles.paymentContent} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}><BackButton onPress={onBack} onboarding /><View style={styles.paymentHeading}><View><Text style={styles.paymentEyebrow}>{purpose === 'appointment' ? 'CONSULTATION' : 'ORDER'}</Text><Text style={styles.paymentTitle}>Payment</Text></View><Text style={styles.paymentAmount}>₹{amount.toLocaleString('en-IN')}</Text></View><View style={styles.paymentSummaryCard}><View style={styles.paymentSummaryIcon}><Text style={styles.paymentSummaryIconText}>{summary.icon}</Text></View><View style={styles.paymentSummaryCopy}><Text style={styles.paymentSummaryTitle}>{summary.title}</Text><Text style={styles.paymentSummaryDetail}>{summary.detail}</Text></View></View><Text style={styles.paymentSectionLabel}>PAY USING</Text><View style={styles.paymentMethods}>{methods.map(option => <Pressable key={option.key} onPress={() => setMethod(option.key)} style={[styles.paymentMethod, method === option.key && styles.paymentMethodSelected]}><View style={[styles.paymentRadio, method === option.key && styles.paymentRadioSelected]}>{method === option.key ? <View style={styles.paymentRadioDot} /> : null}</View><View style={styles.paymentMethodCopy}><Text style={styles.paymentMethodTitle}>{option.title}</Text><Text style={styles.paymentMethodDetail}>{option.detail}</Text></View>{option.aside ? <Text style={styles.paymentMethodAside}>{option.aside}</Text> : null}</Pressable>)}</View><View style={styles.paymentUnavailableMethod}><View style={styles.paymentRadio} /><View><Text style={styles.paymentMethodTitle}>Ayurnidaan wallet</Text><Text style={styles.paymentMethodDetail}>Coming soon</Text></View></View><View style={styles.paymentUnavailableMethod}><View style={styles.paymentRadio} /><View><Text style={styles.paymentMethodTitle}>{purpose === 'appointment' ? 'Pay at the clinic' : 'Cash on delivery'}</Text><Text style={styles.paymentMethodDetail}>Unavailable for this checkout</Text></View></View>{method === 'upi' ? <View style={styles.paymentUpiCard}><Text style={styles.paymentFieldLabel}>UPI APPS</Text><Text style={styles.paymentInputHelp}>Continue to Razorpay to choose an available UPI app on this device. Your payment details will be filled automatically.</Text></View> : null}<Text style={styles.paymentSectionLabel}>COUPON</Text><View style={styles.paymentCouponRow}><TextInput value={coupon} onChangeText={setCoupon} autoCapitalize="characters" placeholder="ENTER CODE" placeholderTextColor="#7E8781" style={[styles.paymentInput, styles.paymentCouponInput]} /><Pressable style={styles.paymentCouponButton}><Text style={styles.paymentCouponText}>Apply</Text></Pressable></View><Text style={styles.paymentSectionLabel}>AMOUNT</Text><View style={styles.paymentBreakdown}><View style={styles.paymentBreakdownRow}><Text style={styles.paymentBreakdownLabel}>{purpose === 'appointment' ? 'Consultation fee' : 'Subtotal'}</Text><Text style={styles.paymentBreakdownValue}>₹{amount.toLocaleString('en-IN')}</Text></View>{purpose === 'shop' ? <View style={styles.paymentBreakdownRow}><Text style={styles.paymentBreakdownLabel}>Delivery</Text><Text style={styles.paymentBreakdownValue}>Free</Text></View> : null}<View style={[styles.paymentBreakdownRow, styles.paymentBreakdownTotal]}><Text style={styles.paymentTotalLabel}>Total payable</Text><Text style={styles.paymentTotalValue}>₹{amount.toLocaleString('en-IN')}</Text></View></View><Text style={styles.paymentSecurity}>{PAYMENT_PROCESSING_ENABLED ? '♢  Payments are processed by Razorpay. Card and UPI credentials are never stored by Ayurnidaan.' : 'Test mode · No payment will be collected. Your confirmation will be saved on this device.'}</Text>{error ? <Text style={styles.paymentError}>{error}</Text> : null}</ScrollView><View style={styles.paymentFooter}><Pressable disabled={paying} onPress={() => void pay()} style={[styles.paymentPayButton, paying && styles.foodButtonDisabled]}>{paying ? <ActivityIndicator color="#FFF" /> : <Text style={styles.paymentPayText}>Pay ₹{amount.toLocaleString('en-IN')}</Text>}</Pressable><Text style={styles.paymentEncrypted}>{PAYMENT_PROCESSING_ENABLED ? 'Secured by 256-bit encryption' : 'Temporary test checkout'}</Text></View></KeyboardAvoidingView></SafeAreaView>;
+}
 const shopCategories = ['Digestive Health', 'Stress & Sleep', 'Energy & Vitality', 'Immunity & Wellness', 'Joint & Muscle Health', 'Respiratory Health', 'Skin & Hair', "Women's Wellness", "Men's Wellness", 'Urinary & Kidney Health', 'Heart & Circulatory Health', 'Weight & Metabolism', 'Detox & Cleansing', 'Cognitive & Memory', 'General Wellness'];
 const products: Product[] = [
   { id: 'ashwagandha', name: 'Ashwagandha', weight: '500 mg · 60 tablets', price: 599, mrp: 699, icon: 'A', categories: ['Energy & Vitality'], tags: ['recommended', 'best-seller'], description: 'Supports stress relief, sustained energy, restful sleep, and overall wellness.', rating: '4.7 (920)' },
@@ -1823,7 +2224,7 @@ const products: Product[] = [
 ];
 
 function ShopFlow({ session, onExit, onOpenDoctor, onOpenProfile, onOpenAI }: { session: Session | null; onExit: () => void; onOpenDoctor: () => void; onOpenProfile: () => void; onOpenAI: () => void }) {
-  const [stage, setStage] = useState<'home' | 'details' | 'cart' | 'address' | 'success'>('home');
+  const [stage, setStage] = useState<'home' | 'details' | 'cart' | 'address' | 'payment' | 'success'>('home');
   const [selected, setSelected] = useState(products[0]);
   const [cart, setCart] = useState<Record<string, number>>({});
   const [shopProducts, setShopProducts] = useState(products);
@@ -1839,6 +2240,13 @@ function ShopFlow({ session, onExit, onOpenDoctor, onOpenProfile, onOpenAI }: { 
   const [addressReturn, setAddressReturn] = useState<'home' | 'checkout'>('home'); const [addingAddress, setAddingAddress] = useState(false);
   const [addressLabel, setAddressLabel] = useState('Home'); const [recipientName, setRecipientName] = useState(''); const [addressLine, setAddressLine] = useState('');
   const [addressCity, setAddressCity] = useState(''); const [addressState, setAddressState] = useState(''); const [addressPostcode, setAddressPostcode] = useState(''); const [addressError, setAddressError] = useState('');
+  useAndroidBack(() => {
+    if (stage === 'home') onExit();
+    else if (stage === 'details' || stage === 'success') setStage('home');
+    else if (stage === 'cart') setStage('home');
+    else if (stage === 'address') setStage(addressReturn === 'checkout' ? 'cart' : 'home');
+    else if (stage === 'payment') setStage('address');
+  });
   useEffect(() => {
     let active = true;
     supabase.from('shop_products').select('id, name, weight, price, mrp, icon, categories, tags, description, rating, rating_count').eq('active', true).order('sort_order').then(({ data }) => {
@@ -1892,17 +2300,10 @@ function ShopFlow({ session, onExit, onOpenDoctor, onOpenProfile, onOpenAI }: { 
     if (!session?.user.id) return setOrderError('Please sign in again before placing your order.');
     if (!confirmed) return openAddresses('checkout');
     if (!selectedAddress) { setAddressError('Select an address or add a new one before checkout.'); return; }
-    setPlacingOrder(true); setOrderError('');
-    const { data: order, error: orderInsertError } = await supabase.from('shop_orders').insert({ user_id: session.user.id, total_amount: cartTotal, delivery_postcode: selectedAddress.postcode, delivery_address_id: selectedAddress.id, delivery_address_label: selectedAddress.label, delivery_address_snapshot: `${selectedAddress.recipient_name}\n${selectedAddress.address_line}\n${selectedAddress.city}, ${selectedAddress.state} ${selectedAddress.postcode}` }).select('id').single();
-    if (orderInsertError || !order) { setPlacingOrder(false); return setOrderError(orderInsertError?.message ?? 'Could not place your order.'); }
-    const { error: itemsError } = await supabase.from('shop_order_items').insert(cartItems.map(({ product, quantity }) => ({ order_id: order.id, user_id: session.user.id, product_id: product.id, quantity, unit_price: product.price })));
-    setPlacingOrder(false);
-    if (itemsError) return setOrderError(itemsError.message);
-    setPreviouslyOrderedIds(current => [...new Set([...current, ...cartItems.map(item => item.product.id)])]);
-    setPlacedOrder({ id: order.id, itemCount: cartCount, total: cartTotal, addressLabel: selectedAddress.label });
-    setStage('success');
+    setOrderError(''); setStage('payment');
   }
   if (stage === 'address') return <AddressBook mode={addressReturn === 'checkout' ? 'checkout' : 'shopping'} total={cartTotal} addresses={addresses} selected={selectedAddress} adding={addingAddress} fields={{ addressLabel, recipientName, addressLine, addressCity, addressState, addressPostcode }} error={addressError} onSelect={setSelectedAddress} onToggleAdd={() => setAddingAddress(!addingAddress)} onField={(field, value) => { if (field === 'label') setAddressLabel(value); if (field === 'name') setRecipientName(value); if (field === 'line') setAddressLine(value); if (field === 'city') setAddressCity(value); if (field === 'state') setAddressState(value); if (field === 'postcode') setAddressPostcode(value); }} onSave={saveAddress} onBack={() => setStage(addressReturn === 'checkout' ? 'cart' : 'home')} onConfirm={confirmAddress} confirming={placingOrder} />;
+  if (stage === 'payment' && selectedAddress) return <PaymentScreen purpose="shop" amount={cartTotal} summary={{ icon: '♧', title: `${cartCount} ${cartCount === 1 ? 'product' : 'products'} · Ayurnidaan store`, detail: `Delivering to ${selectedAddress.label} · ${selectedAddress.address_line}, ${selectedAddress.city} · arrives in 3–5 days` }} requestPayload={{ items: cartItems.map(({ product, quantity }) => ({ product_id: product.id, quantity })), address_id: selectedAddress.id }} onBack={() => setStage('address')} onPaid={async orderId => { const storedOrder: ShopOrder = { id: orderId, total_amount: cartTotal, status: 'placed', created_at: new Date().toISOString(), items: cartItems.map(({ product, quantity }) => ({ product_id: product.id, quantity, unit_price: product.price, product: { name: product.name, weight: product.weight, icon: product.icon } })) }; if (session?.user.id) await prependStoredItem(demoOrdersKey(session.user.id), storedOrder); setPreviouslyOrderedIds(current => [...new Set([...current, ...cartItems.map(item => item.product.id)])]); setPlacedOrder({ id: orderId, itemCount: cartCount, total: cartTotal, addressLabel: selectedAddress.label }); setStage('success'); }} />;
   if (stage === 'success') return <OrderSuccess order={placedOrder} onReturn={() => { setCart({}); setPlacedOrder(null); setStage('home'); }} />;
   if (stage === 'cart') return <ShopCart items={cartItems} total={cartTotal} error={orderError} placing={placingOrder} onBack={() => setStage('home')} onChange={changeQuantity} onCheckout={() => checkout()} />;
   if (stage === 'details') return <SafeAreaView style={styles.shopSafe}><StatusBar style="dark" /><ScrollView contentContainerStyle={styles.productDetailPage}><BackButton onPress={() => setStage('home')} /><Text style={styles.shopTitle}>Product Details</Text><View style={styles.productDetailHero}><View style={styles.productDetailCopy}><Text style={styles.productDetailName}>{selected.name}</Text><Text style={styles.productWeight}>{selected.weight}</Text></View><ProductVisual product={selected} /></View><Text style={styles.productDetailPrice}>₹{selected.price}</Text><Text style={styles.productMrp}>MRP ₹{selected.mrp}</Text><View style={styles.ratingLine}><Text style={styles.ratingStar}>★</Text><Text style={styles.ratingText}>{selected.rating}</Text></View><Text style={styles.productDescription}>{selected.description}</Text><View style={styles.productAction}>{cart[selected.id] ? <ProductQuantityControl quantity={cart[selected.id]} onDecrease={() => changeQuantity(selected.id, -1)} onIncrease={() => changeQuantity(selected.id, 1)} large /> : <PrimaryButton label="Add to Cart" onPress={() => addToCart(selected)} />}</View></ScrollView><CartButton count={cartCount} onPress={() => setStage('cart')} /></SafeAreaView>;
@@ -1922,7 +2323,7 @@ function AddressBook({ mode, total, addresses, selected, adding, fields, error, 
 
 function OrderSummary({ total }: { total: number }) { return <View style={styles.orderSummaryCard}><View style={styles.orderSummaryRow}><Text style={styles.orderSummaryText}>Subtotal</Text><Text style={styles.orderSummaryText}>₹{total.toLocaleString('en-IN')}</Text></View><View style={styles.orderSummaryRow}><Text style={styles.orderSummaryText}>Delivery</Text><Text style={styles.orderSummaryText}>Free</Text></View><View style={styles.orderSummaryRow}><Text style={styles.orderSummaryTotal}>Total</Text><Text style={styles.orderSummaryTotal}>₹{total.toLocaleString('en-IN')}</Text></View></View>; }
 
-function OrderSuccess({ order, onReturn }: { order: PlacedShopOrder | null; onReturn: () => void }) { const today = new Date(); const start = new Date(today); const end = new Date(today); start.setDate(today.getDate() + 5); end.setDate(today.getDate() + 7); const month = end.toLocaleDateString('en-IN', { month: 'short' }); const arrival = `${start.getDate()}–${end.getDate()} ${month} ${end.getFullYear()}`; return <Pressable accessibilityRole="button" accessibilityLabel="Return to shop" onPress={onReturn} style={styles.shopOrderSuccessPage}><StatusBar style="light" /><View style={styles.shopOrderSuccessDecor} /><View style={styles.shopOrderSuccessCheck}><Text style={styles.shopOrderSuccessCheckText}>✓</Text></View><Text style={styles.shopOrderSuccessTitle}>Order placed</Text><Text style={styles.shopOrderSuccessCopy}>Your Ayurvedic wellness products are being prepared. We will keep you updated on your order.</Text><View style={styles.shopOrderSuccessSummary}><SuccessRow label="ORDER" value={`#AY${(order?.id ?? '0000').slice(0, 4).toUpperCase()}`} /><SuccessRow label="ITEMS" value={`${order?.itemCount ?? 0} products`} /><SuccessRow label="DELIVER TO" value={order?.addressLabel ?? 'Home'} /><SuccessRow label="ARRIVING" value={arrival} /><SuccessRow label="PAID" value={`₹${(order?.total ?? 0).toLocaleString('en-IN')}`} last /></View><Text style={styles.shopOrderSuccessTap}>Tap anywhere to return to the shop</Text></Pressable>; }
+function OrderSuccess({ order, onReturn }: { order: PlacedShopOrder | null; onReturn: () => void }) { const today = new Date(); const start = new Date(today); const end = new Date(today); start.setDate(today.getDate() + 5); end.setDate(today.getDate() + 7); const month = end.toLocaleDateString('en-IN', { month: 'short' }); const arrival = `${start.getDate()}–${end.getDate()} ${month} ${end.getFullYear()}`; return <Pressable accessibilityRole="button" accessibilityLabel="Return to shop" onPress={onReturn} style={styles.shopOrderSuccessPage}><StatusBar style="light" /><View style={styles.shopOrderSuccessDecor} /><View style={styles.shopOrderSuccessCheck}><Text style={styles.shopOrderSuccessCheckText}>✓</Text></View><Text style={styles.shopOrderSuccessTitle}>Order placed</Text><Text style={styles.shopOrderSuccessCopy}>Your Ayurvedic wellness products are being prepared. We will keep you updated on your order.</Text><View style={styles.shopOrderSuccessSummary}><SuccessRow label="ORDER" value={`#AY${(order?.id ?? '0000').slice(0, 4).toUpperCase()}`} /><SuccessRow label="ITEMS" value={`${order?.itemCount ?? 0} products`} /><SuccessRow label="DELIVER TO" value={order?.addressLabel ?? 'Home'} /><SuccessRow label="ARRIVING" value={arrival} /><SuccessRow label={PAYMENT_PROCESSING_ENABLED ? 'PAID' : 'TOTAL'} value={`₹${(order?.total ?? 0).toLocaleString('en-IN')}`} last /></View><Text style={styles.shopOrderSuccessTap}>Tap anywhere to return to the shop</Text></Pressable>; }
 function SuccessRow({ label, value, last = false }: { label: string; value: string; last?: boolean }) { return <View style={[styles.shopOrderSuccessRow, last && styles.shopOrderSuccessRowLast]}><Text style={styles.shopOrderSuccessLabel}>{label}</Text><Text style={styles.shopOrderSuccessValue}>{value}</Text></View>; }
 
 function ShopProductCard({ product, quantity, onOpen, onAdd, onDecrease, onIncrease }: { product: Product; quantity: number; onOpen: () => void; onAdd: () => void; onDecrease: () => void; onIncrease: () => void }) { return <Pressable onPress={onOpen} style={({ pressed }) => [styles.productCard, pressed && styles.pressed]}><ProductVisual product={product} /><Text numberOfLines={1} style={styles.productName}>{product.name}</Text><Text numberOfLines={1} style={styles.productWeight}>{product.weight}</Text><Text style={styles.productPrice}>₹{product.price}</Text>{quantity ? <ProductQuantityControl quantity={quantity} onDecrease={onDecrease} onIncrease={onIncrease} /> : <Pressable onPress={(event) => { event.stopPropagation(); onAdd(); }} style={styles.quickAdd}><Text style={styles.quickAddText}>Add to cart</Text></Pressable>}</Pressable>; }
@@ -1958,7 +2359,7 @@ const doctors: Doctor[] = [
 ];
 
 function DoctorFlow({ session, onExit, onOpenShop, onOpenProfile, onOpenAI }: { session: Session | null; onExit: () => void; onOpenShop: () => void; onOpenProfile: () => void; onOpenAI: () => void }) {
-  const [stage, setStage] = useState<'intake' | 'matches' | 'profile' | 'schedule' | 'confirmed'>('intake');
+  const [stage, setStage] = useState<'intake' | 'matches' | 'profile' | 'schedule' | 'payment' | 'confirmed'>('intake');
   const [doctor, setDoctor] = useState(doctors[0]);
   const [appointmentDate, setAppointmentDate] = useState(() => localDateKey(new Date()));
   const [time, setTime] = useState('10:00 AM');
@@ -1970,20 +2371,32 @@ function DoctorFlow({ session, onExit, onOpenShop, onOpenProfile, onOpenAI }: { 
   const [selectedTags, setSelectedTags] = useState<DoctorTag[]>([]);
   const [attachments, setAttachments] = useState<DoctorAttachment[]>([]);
   const [showAllDoctors, setShowAllDoctors] = useState(false);
+  useEffect(() => {
+    let active = true;
+    void AsyncStorage.getItem(redFlagDoctorHandoffKey).then(async value => {
+      if (active && value?.trim()) setNotes(value.trim());
+      if (value !== null) await AsyncStorage.removeItem(redFlagDoctorHandoffKey);
+    });
+    return () => { active = false; };
+  }, []);
+  useAndroidBack(() => {
+    if (stage === 'intake' || stage === 'confirmed') onExit();
+    else if (stage === 'matches') setStage('intake');
+    else if (stage === 'profile') setStage('matches');
+    else if (stage === 'schedule') setStage('profile');
+    else if (stage === 'payment') setStage('schedule');
+  });
   const recommendedDoctors = selectedTags.length
     ? doctors.filter(item => selectedTags.some(tag => item.tags.includes(tag))).sort((left, right) => Number(right.rating) - Number(left.rating)).slice(0, 3)
     : [];
   function selectDoctor(nextDoctor: Doctor) { setDoctor(nextDoctor); setStage('profile'); }
   async function confirmAppointment(nextDate: string, nextTime: string, nextType: ConsultationType) {
     if (!session?.user.id) return setSaveError('Please sign in again before booking your appointment.');
-    setSaving(true); setSaveError('');
-    const { error } = await supabase.from('appointments').insert({ user_id: session.user.id, doctor_name: doctor.name, doctor_initials: doctor.initials, appointment_date: nextDate, appointment_time: nextTime, consultation_type: nextType, patient_notes: notes.trim() || null, symptom_tags: selectedTags, attachments: attachments.map(item => ({ name: item.name, size: item.size, storage_path: item.storagePath, type: item.type })) });
-    setSaving(false);
-    if (error) return setSaveError(error.message);
     setAppointmentDate(nextDate); setTime(nextTime); setConsultationType(nextType);
-    setStage('confirmed');
+    setSaveError(''); setStage('payment');
   }
   if (stage === 'confirmed') return <AppointmentConfirmation doctor={doctor} date={appointmentDate} time={time} consultationType={consultationType} onAppointments={onExit} onHome={onExit} />;
+  if (stage === 'payment') return <PaymentScreen purpose="appointment" amount={doctor.fee} summary={{ icon: '♧', title: doctor.name, detail: `${consultationType} · ${formatAppointmentDate(appointmentDate)} · ${time} · 30 minutes` }} requestPayload={{ appointment: { doctor_name: doctor.name, doctor_initials: doctor.initials, appointment_date: appointmentDate, appointment_time: time, consultation_type: consultationType, patient_notes: notes.trim() || null, symptom_tags: selectedTags, attachments: attachments.map(item => ({ name: item.name, size: item.size, storage_path: item.storagePath, type: item.type })) } }} onBack={() => setStage('schedule')} onPaid={async appointmentId => { if (session?.user.id) await prependStoredItem(demoAppointmentsKey(session.user.id), { id: appointmentId, doctor_name: doctor.name, doctor_initials: doctor.initials, appointment_date: appointmentDate, appointment_time: time, consultation_type: consultationType, status: 'booked', discussion_summary: null, prescription: null }); setStage('confirmed'); }} />;
   if (stage === 'schedule') return <AppointmentScheduler doctor={doctor} saving={saving} error={saveError} onBack={() => setStage('profile')} onConfirm={confirmAppointment} />;
   if (stage === 'profile') return <DoctorProfile doctor={doctor} onBack={() => setStage('matches')} onBook={() => setStage('schedule')} />;
   if (stage === 'matches') return <DoctorMatchesScreen selectedTags={selectedTags} attachments={attachments} recommended={recommendedDoctors} specialtyFilter={specialtyFilter} showAll={showAllDoctors || !selectedTags.length} onBack={() => setStage('intake')} onFilter={setSpecialtyFilter} onToggleAll={() => setShowAllDoctors(value => !value)} onSelectDoctor={selectDoctor} onExit={onExit} onOpenShop={onOpenShop} onOpenProfile={onOpenProfile} onOpenAI={onOpenAI} />;
@@ -2079,7 +2492,7 @@ function AppointmentScheduler({ doctor, saving, error, onBack, onConfirm }: { do
   return <SafeAreaView style={styles.doctorSafe}><StatusBar style="dark" /><ScrollView contentContainerStyle={styles.schedulerPage}><BackButton onPress={onBack} onboarding /><Text style={styles.doctorTitle}>Select date &amp; time</Text><Text style={styles.schedulerDoctor}>{doctor.name} · ₹{doctor.fee}</Text><View style={styles.calendarCard}><View style={styles.monthRow}><Pressable disabled={!canGoBack} onPress={() => moveMonth(-1)}><Text style={[styles.monthArrow, !canGoBack && styles.monthArrowDisabled]}>‹</Text></Pressable><Text style={styles.monthTitle}>{monthLabel}</Text><Pressable disabled={!canGoForward} onPress={() => moveMonth(1)}><Text style={[styles.monthArrow, !canGoForward && styles.monthArrowDisabled]}>›</Text></Pressable></View><View style={styles.calendarGrid}>{['SUN','MON','TUE','WED','THU','FRI','SAT'].map(label => <Text key={label} style={styles.weekday}>{label}</Text>)}{Array.from({ length: leadingBlanks }, (_, index) => <View key={`blank-${index}`} style={styles.calendarDay} />)}{Array.from({ length: daysInMonth }, (_, index) => index + 1).map(day => { const date = new Date(visibleMonth.getFullYear(), visibleMonth.getMonth(), day); const dateKey = localDateKey(date); const disabled = date < today || date > lastDate; const selected = dateKey === selectedDate; return <Pressable key={dateKey} disabled={disabled} onPress={() => setSelectedDate(dateKey)} style={[styles.calendarDay, selected && styles.calendarDaySelected]}><Text style={[styles.calendarDayText, disabled && styles.calendarDayTextDisabled, selected && styles.calendarDayTextSelected]}>{day}</Text></Pressable>; })}</View></View><View style={styles.slotsHeading}><Text style={styles.doctorLabel}>AVAILABLE SLOTS</Text><Text style={styles.slotsDate}>{formatAppointmentDate(selectedDate)}</Text></View><View style={styles.slotGrid}>{slots.map(slot => <Pressable key={slot.value} disabled={!slot.available} onPress={() => setSelectedTime(slot.value)} style={[styles.slot, selectedTime === slot.value && styles.slotSelected, !slot.available && styles.slotDisabled]}><Text style={[styles.slotText, selectedTime === slot.value && styles.slotTextSelected, !slot.available && styles.slotTextDisabled]}>{slot.value}</Text></Pressable>)}</View><Text style={styles.doctorLabel}>CONSULTATION TYPE</Text><View style={styles.consultationTypeRow}>{(['Video Consultation', 'Audio Consultation'] as const).map(type => <Pressable key={type} onPress={() => setSelectedType(type)} style={[styles.consultationTypeCard, selectedType === type && styles.consultationTypeSelected]}><Text style={styles.consultationTypeTitle}>{type.replace(' Consultation', '')}</Text><Text style={styles.consultationTypeCopy}>{type === 'Video Consultation' ? 'Video call in the app' : 'Voice call in the app'}</Text></Pressable>)}</View>{error ? <Text style={styles.error}>{error}</Text> : null}</ScrollView><View style={styles.schedulerFooter}><PrimaryButton label="Confirm appointment" loading={saving} onPress={() => onConfirm(selectedDate, selectedTime, selectedType)} /></View></SafeAreaView>;
 }
 
-function AppointmentConfirmation({ doctor, date, time, consultationType, onAppointments, onHome }: { doctor: Doctor; date: string; time: string; consultationType: ConsultationType; onAppointments: () => void; onHome: () => void }) { const rows = [['DOCTOR', doctor.name], ['DATE', formatAppointmentDate(date)], ['TIME', time], ['TYPE', consultationType.replace(' Consultation', ' consultation')], ['FEE', `₹${doctor.fee} · paid`]]; return <SafeAreaView style={styles.confirmedSafe}><StatusBar style="light" /><View style={styles.confirmedDecor} /><View style={styles.confirmedPage}><View style={styles.appointmentCheck}><Text style={styles.appointmentCheckText}>✓</Text></View><Text style={styles.confirmedTitle}>Appointment confirmed</Text><Text style={styles.confirmedNote}>We have saved the details and will{`\n`}remind you an hour before.</Text><View style={styles.confirmedSummary}>{rows.map(([label, value], index) => <View key={label} style={[styles.confirmedRow, index === rows.length - 1 && styles.confirmedRowLast]}><Text style={styles.confirmedLabel}>{label}</Text><Text style={styles.confirmedValue}>{value}</Text></View>)}</View><View style={styles.confirmedActions}><Pressable onPress={onAppointments} style={styles.confirmedPrimary}><Text style={styles.confirmedPrimaryText}>Go to my appointments</Text></Pressable><Pressable onPress={onHome} style={styles.confirmedHome}><Text style={styles.confirmedHomeText}>Back to home</Text></Pressable></View></View></SafeAreaView>; }
+function AppointmentConfirmation({ doctor, date, time, consultationType, onAppointments, onHome }: { doctor: Doctor; date: string; time: string; consultationType: ConsultationType; onAppointments: () => void; onHome: () => void }) { const rows = [['DOCTOR', doctor.name], ['DATE', formatAppointmentDate(date)], ['TIME', time], ['TYPE', consultationType.replace(' Consultation', ' consultation')], ['FEE', `₹${doctor.fee} · ${PAYMENT_PROCESSING_ENABLED ? 'paid' : 'test mode'}`]]; return <SafeAreaView style={styles.confirmedSafe}><StatusBar style="light" /><View style={styles.confirmedDecor} /><View style={styles.confirmedPage}><View style={styles.appointmentCheck}><Text style={styles.appointmentCheckText}>✓</Text></View><Text style={styles.confirmedTitle}>Appointment confirmed</Text><Text style={styles.confirmedNote}>We have saved the details and will{`\n`}remind you an hour before.</Text><View style={styles.confirmedSummary}>{rows.map(([label, value], index) => <View key={label} style={[styles.confirmedRow, index === rows.length - 1 && styles.confirmedRowLast]}><Text style={styles.confirmedLabel}>{label}</Text><Text style={styles.confirmedValue}>{value}</Text></View>)}</View><View style={styles.confirmedActions}><Pressable onPress={onAppointments} style={styles.confirmedPrimary}><Text style={styles.confirmedPrimaryText}>Go to my appointments</Text></Pressable><Pressable onPress={onHome} style={styles.confirmedHome}><Text style={styles.confirmedHomeText}>Back to home</Text></Pressable></View></View></SafeAreaView>; }
 
 function DoctorCard({ doctor, compact = false, availability = 'TODAY' }: { doctor: Doctor; compact?: boolean; availability?: string }) { return <View style={styles.doctorCard}><View style={styles.doctorAvatar}><Text style={styles.doctorAvatarText}>{doctor.initials}</Text></View><View style={styles.doctorInfo}><Text style={styles.doctorListName}>{doctor.name}</Text><Text style={styles.doctorMeta}>{doctor.qualification}</Text><Text style={styles.doctorMeta}>{doctor.experience} · {doctor.specialty}</Text><Text style={styles.doctorPrice}>₹{doctor.fee}</Text></View>{compact ? <View style={styles.doctorListRating}><Text style={styles.doctorListRatingText}><Text style={styles.doctorListRatingStar}>★ </Text>{doctor.rating}</Text><Text style={styles.doctorAvailability}>{availability}</Text></View> : null}</View>; }
 
@@ -2139,6 +2552,26 @@ function formatAppointmentDate(value: string) { const [year, month, day] = value
 function extractAuthParams(url: string) { const fragment = url.split('#')[1] ?? url.split('?')[1] ?? ''; return Object.fromEntries(new URLSearchParams(fragment)); }
 
 const serif = Platform.select({ ios: 'Georgia', android: 'serif' });
+const healthGoalsStyles = StyleSheet.create({
+  goalsSafe: { backgroundColor: '#F8F5EC', flex: 1 },
+  goalsPage: { flex: 1, paddingHorizontal: 40, paddingTop: 17 },
+  goalsTitle: { color: '#273E35', fontFamily: serif, fontSize: 25, lineHeight: 32, marginTop: 14 },
+  goalsIntro: { color: '#78867F', fontSize: 10, lineHeight: 16, marginTop: 7, maxWidth: 270 },
+  goalsBody: { flex: 1, justifyContent: 'center', paddingBottom: 18 },
+  goalsWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  goalChip: { alignItems: 'center', backgroundColor: '#FFFEFA', borderColor: '#E2DED4', borderRadius: 18, borderWidth: 1, flexDirection: 'row', minHeight: 34, paddingHorizontal: 14 },
+  goalChipSelected: { backgroundColor: '#EAF3ED', borderColor: '#164D39' },
+  goalChipBlocked: { opacity: .42 },
+  goalIcon: { color: '#9AA8A1', fontSize: 11, marginRight: 8 },
+  goalChipText: { color: '#718078', fontSize: 10 },
+  goalChipTextSelected: { color: '#164D39' },
+  goalsNote: { color: '#91A098', fontSize: 8, marginTop: 20 },
+  goalsError: { color: '#A24B3A', fontSize: 8, marginTop: 10 },
+  goalsFooter: { backgroundColor: '#F8F5EC', borderTopColor: '#E1DDD3', borderTopWidth: 1, paddingHorizontal: 40, paddingVertical: 13 },
+  goalsContinue: { alignItems: 'center', backgroundColor: '#164D39', borderRadius: 10, justifyContent: 'center', minHeight: 46 },
+  goalsContinueDisabled: { backgroundColor: '#D9D6CC' },
+  goalsContinueText: { color: '#FFF', fontSize: 11, fontWeight: '700' },
+});
 const termsConsentStyles = StyleSheet.create({
   termsSafe: { backgroundColor: '#F8F5EC', flex: 1 },
   termsPage: { flex: 1, paddingBottom: 80, paddingHorizontal: 23, paddingTop: 17 },
@@ -2170,6 +2603,31 @@ const termsConsentStyles = StyleSheet.create({
   termsContinueReady: { backgroundColor: '#43825F' },
   termsContinueText: { color: '#8D9B94', fontSize: 10, fontWeight: '700' },
   termsContinueTextReady: { color: '#FFF' },
+});
+const safeguardStyles = StyleSheet.create({
+  backdrop: { backgroundColor: 'rgba(9, 33, 25, .58)', flex: 1, justifyContent: 'flex-end' },
+  dismissArea: { flex: 1 },
+  sheet: { backgroundColor: '#F8F5EC', borderTopLeftRadius: 22, borderTopRightRadius: 22, paddingBottom: 20, paddingHorizontal: 22, paddingTop: 14 },
+  handle: { alignSelf: 'center', backgroundColor: '#D7D2C7', borderRadius: 2, height: 4, marginBottom: 18, width: 31 },
+  headingRow: { alignItems: 'center', flexDirection: 'row' },
+  shield: { alignItems: 'center', backgroundColor: '#FFF7E7', borderColor: '#E9D5AA', borderRadius: 10, borderWidth: 1, height: 38, justifyContent: 'center', width: 38 },
+  shieldText: { color: '#B98226', fontSize: 16, fontWeight: '800' },
+  headingCopy: { flex: 1, marginLeft: 11 },
+  eyebrow: { color: '#A17832', fontSize: 7, fontWeight: '700', letterSpacing: 1.5 },
+  title: { color: '#223B32', fontFamily: serif, fontSize: 19, lineHeight: 24, marginTop: 3 },
+  copy: { color: '#74827B', fontSize: 9, lineHeight: 15, marginTop: 13 },
+  quote: { backgroundColor: '#FFF', borderColor: '#DDD8CC', borderRadius: 10, borderWidth: 1, marginTop: 13, padding: 12 },
+  quoteLabel: { color: '#9BA49F', fontSize: 6, fontWeight: '700', letterSpacing: 1.3 },
+  quoteText: { color: '#3C4B44', fontSize: 9, lineHeight: 15, marginTop: 8 },
+  bulletRow: { flexDirection: 'row', marginTop: 11, paddingRight: 4 },
+  bullet: { color: '#C08B31', fontSize: 13, lineHeight: 15, marginRight: 7 },
+  bulletText: { color: '#52625A', flex: 1, fontSize: 9, lineHeight: 15 },
+  doctorButton: { alignItems: 'center', backgroundColor: '#164D39', borderRadius: 9, justifyContent: 'center', marginTop: 15, minHeight: 44 },
+  doctorButtonText: { color: '#FFF', fontSize: 10, fontWeight: '700' },
+  closeButton: { alignItems: 'center', justifyContent: 'center', minHeight: 36 },
+  closeButtonText: { color: '#87928D', fontSize: 9, fontWeight: '600' },
+  divider: { backgroundColor: '#DED9CE', height: 1 },
+  emergency: { color: '#8B9690', fontSize: 7, lineHeight: 11, paddingHorizontal: 5, paddingTop: 9, textAlign: 'center' },
 });
 const doctorReviewsStyles = StyleSheet.create({
   doctorReviewsSection: { marginTop: 19 },
@@ -2617,11 +3075,158 @@ const homeV2Styles = StyleSheet.create({
   homeSetupButtonText: { color: '#FFF', fontSize: 10, fontWeight: '700' },
   homePreExploreLabel: { color: '#74867D', fontSize: 8, fontWeight: '600', letterSpacing: 1.5, marginBottom: 9, marginTop: 20 },
   homePreGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  foodTrackingActions: { flexDirection: 'row', gap: 8, marginTop: 19 },
+  foodManualButton: { alignItems: 'center', borderColor: '#164D39', borderRadius: 9, borderWidth: 1, flex: 1, flexDirection: 'row', justifyContent: 'center', minHeight: 43 },
+  foodManualPlus: { color: '#164D39', fontSize: 15, marginRight: 7 },
+  foodManualText: { color: '#164D39', fontSize: 10, fontWeight: '500' },
+  foodScanButton: { alignItems: 'center', backgroundColor: '#164D39', borderRadius: 9, flex: 1, flexDirection: 'row', justifyContent: 'center', minHeight: 43 },
+  foodScanIcon: { color: '#FFF', fontSize: 13, marginRight: 7 },
+  foodScanText: { color: '#FFF', fontSize: 10, fontWeight: '700' },
+  scanSafe: { backgroundColor: '#0D2D23', flex: 1 },
+  scanScreen: { backgroundColor: '#0D2D23', flex: 1 },
+  scanHeader: { alignItems: 'center', flexDirection: 'row', minHeight: 72, paddingHorizontal: 28, paddingTop: Platform.OS === 'android' ? 17 : 6 },
+  scanClose: { alignItems: 'center', borderColor: '#527166', borderRadius: 15, borderWidth: 1, height: 30, justifyContent: 'center', marginRight: 11, width: 30 },
+  scanCloseText: { color: '#E9F1EB', fontSize: 18, fontWeight: '300', lineHeight: 20 },
+  scanEyebrow: { color: '#789488', fontSize: 7, fontWeight: '700', letterSpacing: 1.6 },
+  scanTitle: { color: '#FFF7E8', fontFamily: serif, fontSize: 18, lineHeight: 22, marginTop: 1 },
+  scanCaptureBody: { flex: 1, paddingHorizontal: 28, paddingTop: 10 },
+  scanFrame: { backgroundColor: '#102E25', borderColor: '#294B3F', borderRadius: 13, borderWidth: 1, height: 267, overflow: 'hidden', position: 'relative' },
+  scanPreview: { height: '100%', opacity: .64, width: '100%' },
+  scanPreviewRecognising: { opacity: .32 },
+  scanEmptyPlate: { alignItems: 'center', flex: 1, justifyContent: 'center' },
+  scanEmptyGlyph: { color: '#45675B', fontSize: 28 },
+  scanEmptyText: { color: '#57766A', fontSize: 9, marginTop: 8 },
+  scanCorner: { borderColor: '#D19A31', height: 28, position: 'absolute', width: 28 },
+  scanCornerTopLeft: { borderLeftWidth: 1, borderTopLeftRadius: 7, borderTopWidth: 1, left: 67, top: 49 },
+  scanCornerTopRight: { borderRightWidth: 1, borderTopRightRadius: 7, borderTopWidth: 1, right: 67, top: 49 },
+  scanCornerBottomLeft: { borderBottomLeftRadius: 7, borderBottomWidth: 1, borderLeftWidth: 1, bottom: 49, left: 67 },
+  scanCornerBottomRight: { borderBottomRightRadius: 7, borderBottomWidth: 1, borderRightWidth: 1, bottom: 49, right: 67 },
+  scanHelp: { color: '#A6B9B0', fontSize: 9, fontWeight: '600', lineHeight: 15, marginTop: 14 },
+  scanError: { color: '#F1B7A8', fontSize: 9, lineHeight: 14, marginTop: 8 },
+  scanCaptureActions: { flexDirection: 'row', gap: 8, marginTop: 13 },
+  scanTakePhoto: { alignItems: 'center', backgroundColor: '#FAF7EE', borderRadius: 9, flex: 1, flexDirection: 'row', justifyContent: 'center', minHeight: 43 },
+  scanTakePhotoIcon: { color: '#164D39', fontSize: 12, marginRight: 7 },
+  scanTakePhotoText: { color: '#164D39', fontSize: 10, fontWeight: '600' },
+  scanUpload: { alignItems: 'center', borderColor: '#527166', borderRadius: 9, borderWidth: 1, justifyContent: 'center', minHeight: 43, width: 80 },
+  scanUploadText: { color: '#F5F6EF', fontSize: 10, fontWeight: '600' },
+  scanRecognisingOverlay: { bottom: 9, left: 14, position: 'absolute', right: 14 },
+  scanRecognisingText: { color: '#FFF', fontSize: 8, fontWeight: '700' },
+  scanProgressTrack: { backgroundColor: '#49665A', height: 2, marginTop: 8, overflow: 'hidden' },
+  scanProgressFill: { backgroundColor: '#D19A31', height: 2, width: '58%' },
+  scanSkeleton: { backgroundColor: '#18382E', borderColor: '#365348', borderRadius: 9, borderWidth: 1, gap: 8, marginTop: 8, minHeight: 49, padding: 12 },
+  scanSkeletonLine: { backgroundColor: '#466258', borderRadius: 4, height: 7 },
+  scanResultsScroll: { flex: 1 },
+  scanResultsContent: { paddingBottom: 126, paddingHorizontal: 23, paddingTop: 6 },
+  scanResultsHeading: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginBottom: 9, marginTop: 14 },
+  scanResultsLabel: { color: '#789488', fontSize: 7, fontWeight: '700', letterSpacing: 1.6 },
+  scanResultsCount: { color: '#789488', fontSize: 7, fontWeight: '700', letterSpacing: .5 },
+  scanResultCard: { backgroundColor: '#203F34', borderColor: '#5C756B', borderRadius: 11, borderWidth: 1, marginBottom: 8, minHeight: 103, paddingHorizontal: 13, paddingVertical: 12 },
+  scanResultTop: { alignItems: 'center', flexDirection: 'row' },
+  scanResultCheck: { alignItems: 'center', borderColor: '#80938B', borderRadius: 9, borderWidth: 1, height: 18, justifyContent: 'center', marginRight: 10, width: 18 },
+  scanResultCheckSelected: { backgroundColor: '#F8F6ED', borderColor: '#F8F6ED' },
+  scanResultCheckText: { color: '#164D39', fontSize: 10, fontWeight: '800' },
+  scanResultCopy: { flex: 1 },
+  scanResultName: { color: '#F7F6EF', fontSize: 10, fontWeight: '700' },
+  scanResultMacros: { color: '#A5BBB0', fontSize: 7, letterSpacing: .4, marginTop: 4 },
+  scanConfidence: { backgroundColor: '#315C48', borderRadius: 9, paddingHorizontal: 8, paddingVertical: 4 },
+  scanConfidenceLikely: { backgroundColor: '#645F31' },
+  scanConfidenceLow: { backgroundColor: '#4D5B52' },
+  scanConfidenceText: { color: '#DCE9E1', fontSize: 6, fontWeight: '800', letterSpacing: .7 },
+  scanResultDivider: { backgroundColor: '#456055', height: 1, marginVertical: 12 },
+  scanServingRow: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
+  scanServingText: { color: '#A1B2A9', fontSize: 8 },
+  scanQuantity: { alignItems: 'center', flexDirection: 'row', gap: 13 },
+  scanQuantityButton: { alignItems: 'center', borderColor: '#5C776C', borderRadius: 12, borderWidth: 1, height: 25, justifyContent: 'center', width: 25 },
+  scanQuantityButtonText: { color: '#EFF3EE', fontSize: 15, lineHeight: 17 },
+  scanQuantityValue: { color: '#FFF', fontSize: 11, fontWeight: '700', minWidth: 10, textAlign: 'center' },
+  scanMissing: { color: '#849B90', fontSize: 9, fontWeight: '600', marginVertical: 12, textAlign: 'center' },
+  scanMissingLink: { textDecorationLine: 'underline' },
+  scanFooter: { backgroundColor: '#0D2D23', borderTopColor: '#294A3E', borderTopWidth: 1, bottom: 0, left: 0, paddingBottom: Platform.OS === 'ios' ? 12 : 16, paddingHorizontal: 23, paddingTop: 11, position: 'absolute', right: 0 },
+  scanFooterSummary: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10 },
+  scanFooterLabel: { color: '#8CB2A0', fontSize: 8 },
+  scanFooterValue: { color: '#FFF', fontSize: 8, fontWeight: '700', letterSpacing: .4 },
+  scanFooterActions: { flexDirection: 'row', gap: 8 },
+  scanRetake: { alignItems: 'center', borderColor: '#5A756A', borderRadius: 9, borderWidth: 1, justifyContent: 'center', minHeight: 44, width: 80 },
+  scanRetakeText: { color: '#FFF', fontSize: 10, fontWeight: '600' },
+  scanLog: { alignItems: 'center', backgroundColor: '#F9F6ED', borderRadius: 9, flex: 1, justifyContent: 'center', minHeight: 44 },
+  scanLogDisabled: { opacity: .4 },
+  scanLogText: { color: '#164D39', fontSize: 10, fontWeight: '600' },
+  paymentSafe: { backgroundColor: '#F8F5EC', flex: 1 },
+  paymentScreen: { flex: 1 },
+  paymentContent: { paddingBottom: 132, paddingHorizontal: 25, paddingTop: 18 },
+  paymentHeading: { alignItems: 'flex-end', flexDirection: 'row', justifyContent: 'space-between', marginTop: 12 },
+  paymentEyebrow: { color: '#B48332', fontSize: 7, fontWeight: '700', letterSpacing: 1.6 },
+  paymentTitle: { color: '#263C33', fontFamily: serif, fontSize: 25, lineHeight: 31, marginTop: 4 },
+  paymentAmount: { color: '#17392F', fontFamily: serif, fontSize: 22, letterSpacing: 1.2, marginBottom: 3 },
+  paymentSummaryCard: { alignItems: 'center', backgroundColor: '#FFF', borderColor: '#DFDACF', borderRadius: 11, borderWidth: 1, flexDirection: 'row', marginTop: 18, minHeight: 75, paddingHorizontal: 14, paddingVertical: 11 },
+  paymentSummaryIcon: { alignItems: 'center', backgroundColor: '#E8F2EB', borderRadius: 9, height: 36, justifyContent: 'center', marginRight: 11, width: 36 },
+  paymentSummaryIconText: { color: '#186047', fontSize: 15 },
+  paymentSummaryCopy: { flex: 1 },
+  paymentSummaryTitle: { color: '#2B4138', fontSize: 10, fontWeight: '600' },
+  paymentSummaryDetail: { color: '#7B8982', fontSize: 8, lineHeight: 13, marginTop: 4 },
+  paymentSectionLabel: { color: '#8D9A93', fontSize: 7, fontWeight: '700', letterSpacing: 1.7, marginBottom: 9, marginTop: 19 },
+  paymentMethods: { gap: 8 },
+  paymentMethod: { alignItems: 'center', backgroundColor: '#FFF', borderColor: '#DFDACF', borderRadius: 10, borderWidth: 1, flexDirection: 'row', minHeight: 54, paddingHorizontal: 13, paddingVertical: 9 },
+  paymentMethodSelected: { backgroundColor: '#EAF3ED', borderColor: '#164D39' },
+  paymentUnavailableMethod: { alignItems: 'center', backgroundColor: '#FFF', borderColor: '#E2DED4', borderRadius: 10, borderWidth: 1, flexDirection: 'row', marginTop: 8, minHeight: 54, opacity: .58, paddingHorizontal: 13, paddingVertical: 9 },
+  paymentRadio: { alignItems: 'center', borderColor: '#CEC7BA', borderRadius: 8, borderWidth: 1, height: 16, justifyContent: 'center', marginRight: 10, width: 16 },
+  paymentRadioSelected: { borderColor: '#164D39' },
+  paymentRadioDot: { backgroundColor: '#164D39', borderRadius: 4, height: 8, width: 8 },
+  paymentMethodCopy: { flex: 1 },
+  paymentMethodTitle: { color: '#2D4339', fontSize: 10, fontWeight: '600' },
+  paymentMethodDetail: { color: '#7D8B84', fontSize: 8, marginTop: 3 },
+  paymentMethodAside: { color: '#47735E', fontSize: 6, fontWeight: '700' },
+  paymentUpiCard: { backgroundColor: '#FFF', borderColor: '#DED9CE', borderRadius: 10, borderWidth: 1, marginTop: 9, padding: 13 },
+  paymentFieldLabel: { color: '#89978F', fontSize: 7, fontWeight: '700', letterSpacing: 1.6, marginBottom: 8 },
+  paymentInput: { backgroundColor: '#FCFAF4', borderColor: '#DDD6C9', borderRadius: 9, borderWidth: 1, color: '#2C4238', fontSize: 10, height: 42, paddingHorizontal: 12 },
+  paymentInputHelp: { color: '#8C9892', fontSize: 8, lineHeight: 13, marginTop: 8 },
+  paymentCouponRow: { flexDirection: 'row', gap: 8 },
+  paymentCouponInput: { flex: 1, letterSpacing: 1.4 },
+  paymentCouponButton: { alignItems: 'center', borderColor: '#DED9CE', borderRadius: 9, borderWidth: 1, justifyContent: 'center', width: 68 },
+  paymentCouponText: { color: '#7E8983', fontSize: 9, fontWeight: '600' },
+  paymentBreakdown: { backgroundColor: '#FFF', borderColor: '#DED9CE', borderRadius: 10, borderWidth: 1, paddingHorizontal: 14, paddingVertical: 8 },
+  paymentBreakdownRow: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', minHeight: 29 },
+  paymentBreakdownLabel: { color: '#77877F', fontSize: 9 },
+  paymentBreakdownValue: { color: '#596E63', fontSize: 9 },
+  paymentBreakdownTotal: { borderTopColor: '#E5E0D6', borderTopWidth: 1, marginTop: 2, paddingTop: 4 },
+  paymentTotalLabel: { color: '#2A4137', fontSize: 9, fontWeight: '700' },
+  paymentTotalValue: { color: '#183C31', fontSize: 10, fontWeight: '700' },
+  paymentSecurity: { color: '#8D9993', fontSize: 8, lineHeight: 13, marginTop: 13, textAlign: 'center' },
+  paymentError: { color: '#A44436', fontSize: 9, lineHeight: 14, marginTop: 11, textAlign: 'center' },
+  paymentFooter: { backgroundColor: '#F8F5EC', borderTopColor: '#E1DDD3', borderTopWidth: 1, bottom: 0, left: 0, paddingBottom: Platform.OS === 'ios' ? 9 : 13, paddingHorizontal: 25, paddingTop: 12, position: 'absolute', right: 0 },
+  paymentPayButton: { alignItems: 'center', backgroundColor: '#164D39', borderRadius: 9, justifyContent: 'center', minHeight: 46 },
+  paymentPayText: { color: '#FFF', fontSize: 11, fontWeight: '700' },
+  paymentEncrypted: { color: '#98A39E', fontSize: 7, letterSpacing: .5, marginTop: 8, textAlign: 'center' },
   homePreTile: { alignItems: 'center', backgroundColor: '#FFF', borderColor: '#DED9CE', borderRadius: 10, borderWidth: 1, height: 72, justifyContent: 'center', width: '31.5%' },
   homePreTileIcon: { alignItems: 'center', backgroundColor: '#E8F2EB', borderRadius: 14, height: 28, justifyContent: 'center', width: 28 },
   homePreTileIconText: { color: '#3E795F', fontSize: 14 },
   homePreTileLabel: { color: '#31473D', fontSize: 8, marginTop: 7 },
   homePreBottomNav: { alignItems: 'center', backgroundColor: '#FBF9F3', borderTopColor: '#DED9CE', borderTopWidth: 1, bottom: 0, flexDirection: 'row', height: 70, justifyContent: 'space-around', left: 0, paddingBottom: 8, paddingTop: 5, position: 'absolute', right: 0 },
+  assessmentLockBackdrop: { backgroundColor: 'rgba(8, 31, 24, .46)', flex: 1, justifyContent: 'flex-end' },
+  assessmentLockDismissArea: { flex: 1 },
+  assessmentLockSheet: { backgroundColor: '#F8F5EC', borderTopLeftRadius: 22, borderTopRightRadius: 22, minHeight: 395, paddingBottom: Platform.OS === 'ios' ? 15 : 20, paddingHorizontal: 20, paddingTop: 15 },
+  assessmentLockHandle: { alignSelf: 'center', backgroundColor: '#D2CEC4', borderRadius: 2, height: 4, marginBottom: 15, width: 32 },
+  assessmentLockHeading: { alignItems: 'flex-start', flexDirection: 'row' },
+  assessmentLockIcon: { alignItems: 'center', backgroundColor: '#E6F1E9', borderRadius: 17, height: 38, justifyContent: 'center', marginRight: 11, width: 38 },
+  assessmentLockIconText: { color: '#266B50', fontSize: 14 },
+  assessmentLockHeadingCopy: { flex: 1 },
+  assessmentLockEyebrow: { color: '#B88430', fontSize: 7, fontWeight: '700', letterSpacing: 1.5 },
+  assessmentLockTitle: { color: '#294137', fontFamily: serif, fontSize: 20, lineHeight: 25, marginTop: 4 },
+  assessmentLockBody: { color: '#7B8982', fontSize: 10, lineHeight: 17, marginTop: 15 },
+  assessmentLockChecklist: { backgroundColor: '#FFF', borderColor: '#DED9CE', borderRadius: 10, borderWidth: 1, marginTop: 15, overflow: 'hidden', paddingHorizontal: 13 },
+  assessmentLockRow: { alignItems: 'center', flexDirection: 'row', minHeight: 46 },
+  assessmentLockStatus: { borderColor: '#D5CEC1', borderRadius: 9, borderWidth: 1, height: 18, marginRight: 10, width: 18 },
+  assessmentLockStatusComplete: { alignItems: 'center', backgroundColor: '#164D39', borderColor: '#164D39', justifyContent: 'center' },
+  assessmentLockCheck: { color: '#FFF', fontSize: 10, fontWeight: '800' },
+  assessmentLockRowCopy: { flex: 1 },
+  assessmentLockRowTitle: { color: '#31463D', fontSize: 10, fontWeight: '500' },
+  assessmentLockRowDetail: { color: '#8A9690', fontSize: 7, marginTop: 3 },
+  assessmentLockPending: { color: '#9CA7A1', fontSize: 6, fontWeight: '700', letterSpacing: 1.1 },
+  assessmentLockCompleted: { color: '#37745C' },
+  assessmentLockPrimary: { alignItems: 'center', backgroundColor: '#164D39', borderRadius: 9, justifyContent: 'center', marginTop: 16, minHeight: 43 },
+  assessmentLockPrimaryText: { color: '#FFF', fontSize: 10, fontWeight: '700' },
+  assessmentLockLater: { alignItems: 'center', justifyContent: 'center', minHeight: 34 },
+  assessmentLockLaterText: { color: '#909C96', fontSize: 9, fontWeight: '600' },
 });
 
 const styles = StyleSheet.create({
@@ -2629,6 +3234,7 @@ const styles = StyleSheet.create({
   ...foodStyles,
   ...homeV2Styles,
   ...doctorEntryStyles,
+  ...healthGoalsStyles,
   ...termsConsentStyles,
   ...doctorReviewsStyles,
   appViewport: { flex: 1, paddingTop: Platform.OS === 'android' ? NativeStatusBar.currentHeight ?? 0 : 0 }, appViewportDark: { backgroundColor: '#104F39' }, appViewportLight: { backgroundColor: '#F7F4EB' },

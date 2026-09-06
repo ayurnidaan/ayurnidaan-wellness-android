@@ -1,5 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { gunaPrompt, gunaSchema, validGunaResult, scoreGunas } from './guna.ts';
+import { complaintClassificationPrompt, complaintClassificationSchema, validComplaintClassification, normalizeComplaintClassification } from './complaints.ts';
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -7,6 +8,16 @@ const corsHeaders = {
 };
 const isSafetyClassifierReply = (content: string) =>
   content.replace(/[^a-z]+/gi, " ").trim().toLowerCase() === "user safety safe response safety safe";
+const redFlagPatterns = [
+  /\b(chest pain|chest pressure|chest tightness)\b/i,
+  /\b(can(?:not|'t) breathe|severe shortness of breath|struggling to breathe|choking)\b/i,
+  /\b(face droop|one[- ]sided weakness|slurred speech|signs? of (?:a )?stroke)\b/i,
+  /\b(fainted|fainting|unconscious|unresponsive|seizure)\b/i,
+  /\b(severe bleeding|bleeding heavily|vomiting blood|coughing blood|black tarry stool)\b/i,
+  /\b(anaphylaxis|throat (?:is )?swelling|swollen tongue|overdose|poisoning|suicidal|suicide|kill myself|self[- ]harm)\b/i,
+  /\b(sudden (?:worst|severe) headache|worst headache of my life)\b/i,
+];
+const containsRedFlag = (text: string) => redFlagPatterns.some((pattern) => pattern.test(text));
 type QuestionPayload = { question: string; options: string[] };
 type VikritiDosha = "Vata" | "Pitta" | "Kapha";
 type DoshaFinding = { dosha: VikritiDosha; symptoms: string[]; reasoning: string };
@@ -39,7 +50,7 @@ const isConclusionPayload = (value: unknown): value is ConclusionPayload => {
   return valid && new Set(findings.map((finding) => (finding as DoshaFinding).dosha)).size === findings.length;
 };
 
-const buildFollowUpPrompt = (prakriti: string, previousQuestion: string, patientResponse: string, chatHistory: string) => `You are assisting in a clinical assessment of an individual's Vikruti (current Dosha imbalance).
+const buildFollowUpPrompt = (prakriti: string, previousQuestion: string, patientResponse: string, chatHistory: string, targetSymptom: string, followUpNumber: number) => `You are assisting in a clinical assessment of an individual's Vikruti (current Dosha imbalance).
 
 Your task is ONLY to generate the next relevant follow-up question based on the patient's latest response.
 
@@ -49,11 +60,12 @@ Assessment context:
 - Prakriti: ${prakriti}
 ${chatHistory ? `- Opening complaint conversation so far:\n  ${chatHistory}\n` : ""}- Previous question: ${previousQuestion}
 - Patient's response: ${patientResponse}
+${targetSymptom ? `- Opening symptom currently being clarified: ${targetSymptom}\n- Follow-up number for this symptom: ${followUpNumber} of 2\n` : ""}
 
 Instructions:
 
 1. Ask exactly ONE concise follow-up question.
-2. The question should clarify or expand upon the patient's latest response.
+2. ${targetSymptom ? `Focus only on clarifying "${targetSymptom}". Ask about a clinically relevant characteristic not already established in the conversation.` : "The question should clarify or expand upon the patient's latest response."}
 3. Focus only on information relevant to assessing the individual's current state.
 4. Do not diagnose or state which Dosha is involved.
 5. Do not explain the reasoning behind the question.
@@ -120,10 +132,12 @@ Deno.serve(async (request) => {
     const authorization = request.headers.get("Authorization");
     if (!authorization) return Response.json({ error: "Authentication required" }, { status: 401, headers: corsHeaders });
     const body = await request.json();
-    const mode = body.mode === "final" ? "final" : "follow_up";
+    const mode = body.mode === "final" ? "final" : body.mode === "classify_complaints" ? "classify_complaints" : "follow_up";
     const useGunas = mode === 'final' && body.assessmentMethod === 'guna-v1';
     const previousQuestion = typeof body.previousQuestion === "string" ? body.previousQuestion.trim().slice(0, 4000) : "";
     const patientResponse = typeof body.patientResponse === "string" ? body.patientResponse.trim().slice(0, 4000) : "";
+    const targetSymptom = typeof body.targetSymptom === "string" ? body.targetSymptom.trim().slice(0, 500) : "";
+    const followUpNumber = body.followUpNumber === 2 ? 2 : 1;
     const suppliedPatient = body.patientContext && typeof body.patientContext === "object" ? body.patientContext : null;
     const suppliedPrakriti = suppliedPatient ? ["vataPercentage", "pittaPercentage", "kaphaPercentage"].map((key) => Number(suppliedPatient[key])) : [];
     if (suppliedPatient && (suppliedPrakriti.some((value) => !Number.isFinite(value) || value < 0 || value > 100) || suppliedPrakriti.reduce((sum, value) => sum + value, 0) !== 100)) {
@@ -132,6 +146,9 @@ Deno.serve(async (request) => {
     if (mode === "follow_up" && (!previousQuestion || !patientResponse)) {
       return Response.json({ error: "The previous question and patient response are required" }, { status: 400, headers: corsHeaders });
     }
+    if (mode === "classify_complaints" && !patientResponse) {
+      return Response.json({ error: "The patient's opening complaint is required" }, { status: 400, headers: corsHeaders });
+    }
     const messages = (Array.isArray(body.messages) ? body.messages : [])
       .filter((message) => (message?.role === "user" || message?.role === "assistant") && typeof message?.content === "string")
       .slice(-100)
@@ -139,6 +156,8 @@ Deno.serve(async (request) => {
     if (mode === "final" && !messages.length) {
       return Response.json({ error: "The complete assessment conversation is required" }, { status: 400, headers: corsHeaders });
     }
+    const latestPatientText = patientResponse || [...messages].reverse().find((message) => message.role === "user")?.content || "";
+    if (containsRedFlag(latestPatientText)) return Response.json({ red_flag: true }, { headers: corsHeaders });
     const apiKey = Deno.env.get("OPENROUTER_API_KEY");
     const model = Deno.env.get("OPENROUTER_MODEL");
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
@@ -169,9 +188,13 @@ Deno.serve(async (request) => {
     const chatHistory = messages.map((message) => `${message.role === "assistant" ? "Assessment" : "Patient"}: ${message.content}`).join("\n  ");
     const prompt = mode === "final"
       ? (useGunas ? gunaPrompt(prakritiContext, chatHistory) : buildFinalPrompt(prakritiContext, chatHistory))
-      : buildFollowUpPrompt(prakritiContext, previousQuestion, patientResponse, chatHistory);
+      : mode === "classify_complaints"
+        ? complaintClassificationPrompt(patientResponse)
+        : buildFollowUpPrompt(prakritiContext, previousQuestion, patientResponse, chatHistory, targetSymptom, followUpNumber);
 
-    const responseFormat = mode === "final"
+    const responseFormat = mode === "classify_complaints"
+      ? complaintClassificationSchema
+      : mode === "final"
       ? {
           type: "json_schema",
           json_schema: {
@@ -237,10 +260,15 @@ Deno.serve(async (request) => {
       const data = await response.json();
       const rawReply = data.choices?.[0]?.message?.content?.trim() ?? "";
       const parsedReply = parseStructuredReply(rawReply);
-      const validReply = mode === "final"
+      const validReply = mode === "classify_complaints"
+        ? validComplaintClassification(parsedReply)
+        : mode === "final"
         ? (useGunas ? validGunaResult(parsedReply) : isConclusionPayload(parsedReply))
         : isQuestionPayload(parsedReply);
       if (!isSafetyClassifierReply(rawReply) && validReply) {
+        if (mode === "classify_complaints" && validComplaintClassification(parsedReply)) {
+          return Response.json({ classification: normalizeComplaintClassification(parsedReply) }, { headers: corsHeaders });
+        }
         if (mode === "final") {
           if (useGunas && validGunaResult(parsedReply)) return Response.json({ assessment: scoreGunas(parsedReply) }, { headers: corsHeaders });
           const conclusion = parsedReply as ConclusionPayload;

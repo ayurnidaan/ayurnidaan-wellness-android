@@ -26,6 +26,14 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     'expo-web-browser',
     'expo-asset',
     [
+      'expo-image-picker',
+      {
+        photosPermission: 'Allow Ayurnidaan to choose a meal photo for nutrition tracking.',
+        cameraPermission: 'Allow Ayurnidaan to photograph a meal for nutrition tracking.',
+        microphonePermission: false,
+      },
+    ],
+    [
       'expo-splash-screen',
       {
         backgroundColor: '#F8F4E8',
@@ -40,6 +48,9 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     bundleIdentifier: isDevelopment
       ? 'com.ayurnidaan.wellness.dev'
       : 'com.ayurnidaan.wellness',
+    infoPlist: {
+      LSApplicationQueriesSchemes: ['tez', 'phonepe', 'paytmmp'],
+    },
   },
   android: {
     package: isDevelopment
