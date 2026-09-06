@@ -46,6 +46,7 @@ const redFlagPatterns = [
   /\b(sudden (?:worst|severe) headache|worst headache of my life)\b/i,
 ];
 function isRedFlagMessage(message: string) { return redFlagPatterns.some(pattern => pattern.test(message)); }
+const redFlagReply = 'AYURNIDAAN_RED_FLAG_DETECTED';
 const redFlagDoctorHandoffKey = 'ayurnidaan:red-flag-doctor-handoff';
 const assessmentQuestions: AssessmentQuestion[] = [
   { prompt: 'How would you describe your natural body build?', options: { A: 'Thin or lean, with visible joints', B: 'Medium and balanced', C: 'Broad, heavy or muscular' } },
@@ -852,7 +853,7 @@ function CurrentHealthChat({ session, patientContext, showBack = true, onBack, o
   async function requestComplaintClassification(request: Extract<PendingVikritiRequest, { kind: 'classifyComplaints' }>) {
     setSending(true); setError(''); setPendingRequest(request);
     const { data, error: functionError } = await supabase.functions.invoke('current-health-chat', { body: { mode: 'classify_complaints', patientResponse: request.patientResponse, patientContext } });
-    if (data?.red_flag === true) { setPendingRequest(null); setSending(false); setRedFlagText(request.patientResponse); return; }
+    if (data?.red_flag === true || data?.reply === redFlagReply || data?.safety_code === redFlagReply || (functionError && isRedFlagMessage(request.patientResponse))) { setPendingRequest(null); setSending(false); setRedFlagText(request.patientResponse); return; }
     const classifiedSymptoms = Array.isArray(data?.classification?.symptoms) ? data.classification.symptoms : null;
     const functionMessage = await getFunctionErrorMessage(functionError, data);
     if (functionError || !classifiedSymptoms || !classifiedSymptoms.every((item: unknown) => item && typeof item === 'object' && typeof (item as Record<string, unknown>).symptom === 'string' && typeof (item as Record<string, unknown>).covered_by_domain_questions === 'boolean')) {
@@ -869,7 +870,7 @@ function CurrentHealthChat({ session, patientContext, showBack = true, onBack, o
     setPendingRequest(request);
     const openingHistory = request.nextPhase === 'complaintFollowUp' ? request.conversation : undefined;
     const { data, error: functionError } = await supabase.functions.invoke('current-health-chat', { body: { mode: 'follow_up', previousQuestion: request.previousQuestion, patientResponse: request.patientResponse, patientContext, messages: openingHistory, targetSymptom: request.targetSymptom, followUpNumber: request.followUpNumber } });
-    if (data?.red_flag === true) { setPendingRequest(null); setSending(false); setRedFlagText(request.patientResponse); return; }
+    if (data?.red_flag === true || data?.reply === redFlagReply || data?.safety_code === redFlagReply || (functionError && isRedFlagMessage(request.patientResponse))) { setPendingRequest(null); setSending(false); setRedFlagText(request.patientResponse); return; }
     const reply = typeof data?.reply === 'string' ? data.reply.trim().replace(/^"|"$/g, '') : '';
     const options = Array.isArray(data?.options) ? data.options.filter((option: unknown): option is string => typeof option === 'string' && option.trim().length > 0).slice(0, 3) : [];
     const functionMessage = await getFunctionErrorMessage(functionError, data);
@@ -881,6 +882,8 @@ function CurrentHealthChat({ session, patientContext, showBack = true, onBack, o
   async function requestConclusion(request: Extract<PendingVikritiRequest, { kind: 'final' }>) {
     setSending(true); setError(''); setPendingRequest(request); setPhase('concluding');
     const { data, error: functionError } = await supabase.functions.invoke('current-health-chat', { body: { mode: 'final', messages: request.conversation, patientContext, assessmentMethod: 'guna-v1' } });
+    const latestPatientText = [...request.conversation].reverse().find(message => message.role === 'user')?.content ?? '';
+    if (data?.red_flag === true || data?.reply === redFlagReply || data?.safety_code === redFlagReply || (functionError && isRedFlagMessage(latestPatientText))) { setPendingRequest(null); setPhase('final'); setSending(false); setRedFlagText(latestPatientText); return; }
     const findings = parseVikritiFindings(data?.assessment?.imbalanced_doshas);
     const functionMessage = await getFunctionErrorMessage(functionError, data);
     if (functionError || findings === null) { setSending(false); setError(functionMessage || functionError?.message || 'The assessment did not return a valid conclusion. Please try again.'); return; }
@@ -926,7 +929,6 @@ function CurrentHealthChat({ session, patientContext, showBack = true, onBack, o
     if (!content || sending || pendingRequest) return;
     const next: ChatMessage[] = [...messages, { role: 'user', content }];
     setInput(''); setInputHeight(44); setMessages(next);
-    if (isRedFlagMessage(content)) { setRedFlagText(content); return; }
     if (phase === 'complaint') {
       if (validationMode === 'vikriti') requestComplaintClassification({ kind: 'classifyComplaints', patientResponse: content, conversation: next });
       else requestFollowUp({ kind: 'followUp', previousQuestion: currentHealthOpening, patientResponse: content, conversation: next, nextPhase: 'complaintFollowUp' });
@@ -2141,11 +2143,10 @@ function AIChat({ session, onExit, onOpenShop, onOpenDoctor, onOpenProfile }: { 
     if (!content || sending) return;
     const next: ChatMessage[] = [...messages, { role: 'user', content }];
     setMessages(next); setInput(''); setInputHeight(44); setError('');
-    if (isRedFlagMessage(content)) { setRedFlagText(content); return; }
     setSending(true);
     const requestMessages = next.map(message => ({ role: message.role, content: message.content }));
     const { data, error: functionError } = await supabase.functions.invoke('ai-chat', { body: { messages: requestMessages } });
-    if (data?.red_flag === true) { setRedFlagText(content); setSending(false); return; }
+    if (data?.red_flag === true || data?.reply === redFlagReply || data?.safety_code === redFlagReply || (functionError && isRedFlagMessage(content))) { setRedFlagText(content); setSending(false); return; }
     if (functionError || typeof data?.reply !== 'string') { setError('AI Vaidya could not respond. Please try again.'); setSending(false); return; }
     setMessages(current => [...current, { role: 'assistant', content: data.reply }]); setSending(false);
   }
