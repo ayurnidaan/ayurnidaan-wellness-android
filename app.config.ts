@@ -6,11 +6,11 @@ const isDevelopment =
 
 export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
-  name: isDevelopment ? 'Ayurnidaan (Dev)' : 'Ayurnidaan',
+  name: 'Ayurnidaan',
   slug: 'ayurnidaan',
   version: '1.0.0',
   orientation: 'portrait',
-  icon: './assets/ayurnidaan-logo.png',
+  icon: './assets/ayurnidaan-app-icon-safe.png',
   userInterfaceStyle: 'light',
   scheme: isDevelopment ? 'ayurnidaan-dev' : 'ayurnidaan',
   extra: {
@@ -31,6 +31,20 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
         photosPermission: 'Allow Ayurnidaan to choose a meal photo for nutrition tracking.',
         cameraPermission: 'Allow Ayurnidaan to photograph a meal for nutrition tracking.',
         microphonePermission: false,
+      },
+    ],
+    [
+      'expo-camera',
+      {
+        cameraPermission: 'Allow Ayurnidaan to show a live meal preview and take a meal photo.',
+        recordAudioAndroid: false,
+        barcodeScannerEnabled: false,
+      },
+    ],
+    [
+      'expo-location',
+      {
+        locationWhenInUsePermission: 'Allow Ayurnidaan to use your current location to fill your delivery address.',
       },
     ],
     [
@@ -58,10 +72,8 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       : 'com.ayurnidaan.wellness',
     softwareKeyboardLayoutMode: 'resize',
     adaptiveIcon: {
-      backgroundColor: '#E6F4FE',
-      foregroundImage: './assets/android-icon-foreground.png',
-      backgroundImage: './assets/android-icon-background.png',
-      monochromeImage: './assets/android-icon-monochrome.png',
+      backgroundColor: '#164D39',
+      foregroundImage: './assets/ayurnidaan-app-icon-safe.png',
     },
     predictiveBackGestureEnabled: false,
   },

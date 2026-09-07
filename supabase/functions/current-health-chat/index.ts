@@ -8,34 +8,6 @@ const corsHeaders = {
 };
 const isSafetyClassifierReply = (content: string) =>
   content.replace(/[^a-z]+/gi, " ").trim().toLowerCase() === "user safety safe response safety safe";
-const redFlagPatterns = [
-  /\b(chest pain|chest pressure|chest tightness)\b/i,
-  /\b(can(?:not|'t) breathe|severe shortness of breath|struggling to breathe|choking)\b/i,
-  /\b(face droop|one[- ]sided weakness|slurred speech|signs? of (?:a )?stroke)\b/i,
-  /\b(fainted|fainting|unconscious|unresponsive|seizure)\b/i,
-  /\b(severe bleeding|bleeding heavily|vomiting blood|coughing blood|black tarry stool)\b/i,
-  /\b(anaphylaxis|throat (?:is )?swelling|swollen tongue|overdose|poisoning|suicidal|suicide|kill myself|self[- ]harm)\b/i,
-  /\b(sudden (?:worst|severe) headache|worst headache of my life)\b/i,
-];
-const containsRedFlag = (text: string) => redFlagPatterns.some((pattern) => pattern.test(text));
-const RED_FLAG_REPLY = "AYURNIDAAN_RED_FLAG_DETECTED";
-const SAFE_REPLY = "AYURNIDAAN_NO_RED_FLAG";
-const classifyRedFlag = async (apiKey: string, model: string, text: string) => {
-  const prompt = `You are a medical safety classifier. Decide whether the patient's latest response describes a potential emergency or urgent red flag where this assessment must stop and direct the patient to a doctor or emergency services. Red flags include chest pain or pressure, severe breathing difficulty, stroke signs, fainting or unconsciousness, seizures, severe bleeding, anaphylaxis, overdose or poisoning, suicidal intent or self-harm, and sudden severe headache. Do not classify routine or mild symptoms as red flags. Return exactly one string and nothing else: ${RED_FLAG_REPLY} or ${SAFE_REPLY}.`;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", "X-OpenRouter-Title": "Ayurnidaan Safety Check" },
-      body: JSON.stringify({ model, messages: [{ role: "system", content: prompt }, { role: "user", content: text }], temperature: 0, max_tokens: 20 }),
-    });
-    if (!response.ok) throw new Error(`Safety classifier request failed (${response.status})`);
-    const data = await response.json();
-    const result = data.choices?.[0]?.message?.content?.trim() ?? "";
-    if (result === RED_FLAG_REPLY) return true;
-    if (result === SAFE_REPLY) return false;
-  }
-  throw new Error("The safety classifier did not return a valid decision");
-};
 type QuestionPayload = { question: string; options: string[] };
 type VikritiDosha = "Vata" | "Pitta" | "Kapha";
 type DoshaFinding = { dosha: VikritiDosha; symptoms: string[]; reasoning: string };
@@ -174,17 +146,11 @@ Deno.serve(async (request) => {
     if (mode === "final" && !messages.length) {
       return Response.json({ error: "The complete assessment conversation is required" }, { status: 400, headers: corsHeaders });
     }
-    const latestPatientText = patientResponse || [...messages].reverse().find((message) => message.role === "user")?.content || "";
     const apiKey = Deno.env.get("OPENROUTER_API_KEY");
     const model = Deno.env.get("OPENROUTER_MODEL");
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
     const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
     if (!apiKey || !model || !supabaseUrl || !anonKey) throw new Error("Assessment service is not configured");
-    const llmDetectedRedFlag = await classifyRedFlag(apiKey, model, latestPatientText);
-    if (llmDetectedRedFlag || containsRedFlag(latestPatientText)) {
-      return Response.json({ red_flag: true, reply: RED_FLAG_REPLY, safety_code: RED_FLAG_REPLY }, { headers: corsHeaders });
-    }
-
     const userResponse = await fetch(`${supabaseUrl}/auth/v1/user`, { headers: { Authorization: authorization, apikey: anonKey } });
     if (!userResponse.ok) return Response.json({ error: "Invalid session" }, { status: 401, headers: corsHeaders });
     const user = await userResponse.json();

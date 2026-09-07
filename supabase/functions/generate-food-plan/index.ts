@@ -5,7 +5,8 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-type MealPlan = { time: string; meal: string; tags: string[] };
+type RecipeChoice = { meal: string; description: string; tags: string[] };
+type MealPlan = { time: string; meal: string; tags: string[]; choices: RecipeChoice[] };
 type FoodPlan = {
   why_this_plan: string;
   meals: { morning: MealPlan; midday: MealPlan; evening: MealPlan };
@@ -22,25 +23,31 @@ const validStrings = (value: unknown, minimum: number, maximum: number) => Array
 const validMeal = (value: unknown): value is MealPlan => {
   if (!value || typeof value !== "object") return false;
   const meal = value as Record<string, unknown>;
-  return typeof meal.time === "string" && meal.time.trim().length > 0 && typeof meal.meal === "string" && meal.meal.trim().length > 0 && validStrings(meal.tags, 1, 2);
+  const choices = Array.isArray(meal.choices) ? meal.choices : [];
+  return typeof meal.time === "string" && meal.time.trim().length > 0 && typeof meal.meal === "string" && meal.meal.trim().length > 0 && validStrings(meal.tags, 1, 2) && choices.length === 3 && choices.every((choice) => Boolean(choice && typeof choice === "object" && typeof choice.meal === "string" && choice.meal.trim() && typeof choice.description === "string" && choice.description.trim() && validStrings(choice.tags, 1, 2)));
 };
 const validFoodPlan = (value: unknown): value is FoodPlan => {
   if (!value || typeof value !== "object") return false;
   const plan = value as Record<string, unknown>;
   if (typeof plan.why_this_plan !== "string" || !plan.why_this_plan.trim() || !plan.meals || typeof plan.meals !== "object") return false;
   const meals = plan.meals as Record<string, unknown>;
-  return validMeal(meals.morning) && validMeal(meals.midday) && validMeal(meals.evening) && validStrings(plan.favour, 4, 6) && validStrings(plan.limit, 4, 6);
+  if (!validMeal(meals.morning) || !validMeal(meals.midday) || !validMeal(meals.evening) || !validStrings(plan.favour, 4, 6) || !validStrings(plan.limit, 4, 6)) return false;
+  const recipeNames = [meals.morning, meals.midday, meals.evening].flatMap((meal) => meal.choices.map((choice) => choice.meal.trim().toLowerCase()));
+  return new Set(recipeNames).size === 9;
 };
+const sanitizeChoices = (choices: RecipeChoice[]) => choices.map((choice) => ({ meal: cleanText(choice.meal), description: cleanText(choice.description, 180), tags: choice.tags.map((tag) => cleanText(tag, 40)) }));
 const sanitizePlan = (plan: FoodPlan): FoodPlan => ({
   why_this_plan: cleanText(plan.why_this_plan, 360),
   meals: {
-    morning: { time: "7–9 AM", meal: cleanText(plan.meals.morning.meal), tags: plan.meals.morning.tags.map((tag) => cleanText(tag, 40)) },
-    midday: { time: "12–1 PM", meal: cleanText(plan.meals.midday.meal), tags: plan.meals.midday.tags.map((tag) => cleanText(tag, 40)) },
-    evening: { time: "Before 8 PM", meal: cleanText(plan.meals.evening.meal), tags: plan.meals.evening.tags.map((tag) => cleanText(tag, 40)) },
+    morning: { time: "7–9 AM", meal: cleanText(plan.meals.morning.meal), tags: plan.meals.morning.tags.map((tag) => cleanText(tag, 40)), choices: sanitizeChoices(plan.meals.morning.choices) },
+    midday: { time: "12–1 PM", meal: cleanText(plan.meals.midday.meal), tags: plan.meals.midday.tags.map((tag) => cleanText(tag, 40)), choices: sanitizeChoices(plan.meals.midday.choices) },
+    evening: { time: "Before 8 PM", meal: cleanText(plan.meals.evening.meal), tags: plan.meals.evening.tags.map((tag) => cleanText(tag, 40)), choices: sanitizeChoices(plan.meals.evening.choices) },
   },
   favour: plan.favour.map((item) => cleanText(item, 100)),
   limit: plan.limit.map((item) => cleanText(item, 100)),
 });
+const recipeChoiceSchema = { type: "object", properties: { meal: { type: "string" }, description: { type: "string" }, tags: { type: "array", minItems: 1, maxItems: 2, items: { type: "string" } } }, required: ["meal", "description", "tags"], additionalProperties: false };
+const mealSchema = (time: "7–9 AM" | "12–1 PM" | "Before 8 PM") => ({ type: "object", properties: { time: { type: "string", enum: [time] }, meal: { type: "string" }, tags: { type: "array", minItems: 1, maxItems: 2, items: { type: "string" } }, choices: { type: "array", minItems: 3, maxItems: 3, items: recipeChoiceSchema } }, required: ["time", "meal", "tags", "choices"], additionalProperties: false });
 
 const buildFoodPrompt = (prakriti: string, vikruti: string, assessmentHistory: string) => `You are an Ayurvedic food recommendation assistant.
 
@@ -82,7 +89,7 @@ ${assessmentHistory}
 
 ### Create the daily meal plan
 
-Generate three meals:
+Generate exactly nine distinct recipes: three choices for each of the three meals below. Do not repeat a recipe, primary dish, or near-duplicate across any of the nine choices. Put the strongest recommendation first for each meal and repeat that first choice in the meal and tags fields.
 
 1. Morning
 - Suitable for the user's condition and time of day.
@@ -99,8 +106,8 @@ Generate three meals:
 - Suggested time: Before 8 PM.
 
 For each meal provide:
-- A concise meal description.
-- 1–2 short tags describing its relevant qualities.
+- Exactly three recipe choices.
+- For every choice: a concise recipe name, one short display description, and 1–2 short tags describing its relevant qualities.
 
 Examples of tags: "Cooling", "Easy to digest", "Light", "Main meal", "Low chilli", "Early", "Warm", "Hydrating"
 
@@ -123,9 +130,9 @@ Return ONLY valid JSON in exactly this structure:
 {
   "why_this_plan": "One concise sentence explaining the overall reasoning.",
   "meals": {
-    "morning": { "time": "7–9 AM", "meal": "Meal description", "tags": ["Tag 1", "Tag 2"] },
-    "midday": { "time": "12–1 PM", "meal": "Meal description", "tags": ["Tag 1", "Tag 2"] },
-    "evening": { "time": "Before 8 PM", "meal": "Meal description", "tags": ["Tag 1", "Tag 2"] }
+    "morning": { "time": "7–9 AM", "meal": "First recipe name", "tags": ["Tag 1", "Tag 2"], "choices": [{ "meal": "Recipe name", "description": "Short reason it suits the user", "tags": ["Tag 1", "Tag 2"] }, { "meal": "Second distinct recipe", "description": "Short reason", "tags": ["Tag 1"] }, { "meal": "Third distinct recipe", "description": "Short reason", "tags": ["Tag 1"] }] },
+    "midday": { "time": "12–1 PM", "meal": "First recipe name", "tags": ["Tag 1", "Tag 2"], "choices": [{ "meal": "Recipe name", "description": "Short reason", "tags": ["Tag 1", "Tag 2"] }, { "meal": "Second distinct recipe", "description": "Short reason", "tags": ["Tag 1"] }, { "meal": "Third distinct recipe", "description": "Short reason", "tags": ["Tag 1"] }] },
+    "evening": { "time": "Before 8 PM", "meal": "First recipe name", "tags": ["Tag 1", "Tag 2"], "choices": [{ "meal": "Recipe name", "description": "Short reason", "tags": ["Tag 1", "Tag 2"] }, { "meal": "Second distinct recipe", "description": "Short reason", "tags": ["Tag 1"] }, { "meal": "Third distinct recipe", "description": "Short reason", "tags": ["Tag 1"] }] }
   },
   "favour": ["Food type or example", "Food type or example", "Food type or example", "Food type or example"],
   "limit": ["Food type or example", "Food type or example", "Food type or example", "Food type or example"]
@@ -197,9 +204,9 @@ Deno.serve(async (request) => {
             meals: {
               type: "object",
               properties: {
-                morning: { type: "object", properties: { time: { type: "string", enum: ["7–9 AM"] }, meal: { type: "string" }, tags: { type: "array", minItems: 1, maxItems: 2, items: { type: "string" } } }, required: ["time", "meal", "tags"], additionalProperties: false },
-                midday: { type: "object", properties: { time: { type: "string", enum: ["12–1 PM"] }, meal: { type: "string" }, tags: { type: "array", minItems: 1, maxItems: 2, items: { type: "string" } } }, required: ["time", "meal", "tags"], additionalProperties: false },
-                evening: { type: "object", properties: { time: { type: "string", enum: ["Before 8 PM"] }, meal: { type: "string" }, tags: { type: "array", minItems: 1, maxItems: 2, items: { type: "string" } } }, required: ["time", "meal", "tags"], additionalProperties: false },
+                morning: mealSchema("7–9 AM"),
+                midday: mealSchema("12–1 PM"),
+                evening: mealSchema("Before 8 PM"),
               },
               required: ["morning", "midday", "evening"],
               additionalProperties: false,
@@ -218,7 +225,7 @@ Deno.serve(async (request) => {
       const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
         method: "POST",
         headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", "X-OpenRouter-Title": "Ayurnidaan Food Recommendations" },
-        body: JSON.stringify({ model, messages: [{ role: "system", content: prompt }], response_format: responseFormat, plugins: [{ id: "response-healing" }], max_tokens: 1200 }),
+        body: JSON.stringify({ model, messages: [{ role: "system", content: prompt }], response_format: responseFormat, plugins: [{ id: "response-healing" }], max_tokens: 2200 }),
       });
       if (!response.ok) {
         const providerError = (await response.text()).slice(0, 500);
