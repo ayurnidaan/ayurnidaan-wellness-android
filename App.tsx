@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import { ActivityIndicator, Animated, AppState, BackHandler, Dimensions, Image, Keyboard, KeyboardAvoidingView, Linking, Modal, Platform, Pressable, SafeAreaView, ScrollView, StatusBar as NativeStatusBar, StyleSheet, Text, TextInput, View, type ImageSourcePropType, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import * as AuthSession from 'expo-auth-session';
@@ -12,6 +12,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from './src/lib/supabase';
 import { openNativeRazorpayCheckout, type RazorpayCheckoutOptions } from './src/lib/razorpay';
 import { colors } from './src/theme';
+import { AccessibilityInfo } from 'react-native';
 
 WebBrowser.maybeCompleteAuthSession();
 type Screen = 'splash' | 'intro' | 'auth' | 'account' | 'profile' | 'goals' | 'terms' | 'confirmation' | 'home' | 'prakriti' | 'currentHealth' | 'food' | 'yoga' | 'doctor' | 'appointments' | 'shop' | 'profileHub' | 'ai';
@@ -106,6 +107,11 @@ const assessmentOptionImages = [
   { A: require('./assets/options/q24-a.webp'), B: require('./assets/options/q24-b.webp'), C: require('./assets/options/q24-c.webp') },
   { A: require('./assets/options/q25-a.webp'), B: require('./assets/options/q25-b.webp'), C: require('./assets/options/q25-c.webp') },
 ] as const;
+const foodMealImages = {
+  morning: require('./assets/food-breakfast.png'),
+  midday: require('./assets/food-lunch.png'),
+  evening: require('./assets/food-dinner.png'),
+} as const;
 const termsDocumentPages = [
   require('./assets/legal/terms-v5-page-01.png'),
   require('./assets/legal/terms-v5-page-02.png'),
@@ -124,6 +130,43 @@ const termsDocumentPages = [
   require('./assets/legal/terms-v5-page-15.png'),
 ] as const;
 const termsDocumentPdf = require('./output/pdf/Ayurnidaan-Terms-Privacy-Consent-v5.0.pdf');
+
+const fadingTabScreens = new Set<Screen>(['home', 'doctor', 'ai', 'food', 'shop', 'yoga']);
+
+function TabFade({ screen, children }: { screen: Screen; children: React.ReactNode }) {
+  const opacity = useRef(new Animated.Value(1)).current;
+  const previousScreen = useRef(screen);
+  const [reduceMotion, setReduceMotion] = useState(true);
+
+  useEffect(() => {
+    let mounted = true;
+    void AccessibilityInfo.isReduceMotionEnabled().then(enabled => {
+      if (mounted) setReduceMotion(enabled);
+    }).catch(() => {});
+    const subscription = AccessibilityInfo.addEventListener('reduceMotionChanged', setReduceMotion);
+    return () => { mounted = false; subscription.remove(); };
+  }, []);
+
+  useLayoutEffect(() => {
+    const changed = previousScreen.current !== screen;
+    previousScreen.current = screen;
+    opacity.stopAnimation();
+    if (!changed || !fadingTabScreens.has(screen) || reduceMotion) {
+      opacity.setValue(1);
+      return;
+    }
+    // Reset before painting, without remounting the destination or delaying navigation.
+    opacity.setValue(0);
+    const animation = Animated.timing(opacity, {
+      toValue: 1, duration: 300, useNativeDriver: true,
+    });
+    animation.start();
+    return () => animation.stop();
+  }, [screen, reduceMotion, opacity]);
+
+  return <Animated.View style={{ flex: 1, opacity }}>{children}</Animated.View>;
+}
+
 export default function App() {
   const [screen, setScreen] = useState<Screen>('splash');
   const [session, setSession] = useState<Session | null>(null);
@@ -139,7 +182,10 @@ export default function App() {
       if (data.session) await routeUser(data.session);
       if (active) setAuthChecked(true);
     });
-    const { data } = supabase.auth.onAuthStateChange((_event, nextSession) => setSession(nextSession));
+    const { data } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      if (homeAssessmentCache?.userId !== nextSession?.user.id) homeAssessmentCache = null;
+      setSession(nextSession);
+    });
     return () => { active = false; data.subscription.unsubscribe(); };
   }, []);
   useEffect(() => {
@@ -212,7 +258,7 @@ export default function App() {
   else content = <HomeScreen session={session} onStartPrakriti={() => setScreen('prakriti')} onStartCurrentHealth={() => setScreen('currentHealth')} onOpenFood={() => setScreen('food')} onOpenYoga={() => setScreen('yoga')} onOpenDoctor={() => setScreen('doctor')} onOpenShop={() => setScreen('shop')} onOpenProfile={() => setScreen('profileHub')} onOpenAI={() => setScreen('ai')} />;
 
   const darkStatusBarBackground = screen === 'splash' || screen === 'confirmation' || screen === 'home' || screen === 'currentHealth' || screen === 'food' || screen === 'yoga' || screen === 'ai';
-  return <View style={[styles.appViewport, darkStatusBarBackground ? styles.appViewportDark : styles.appViewportLight]}>{content}</View>;
+  return <View style={[styles.appViewport, darkStatusBarBackground ? styles.appViewportDark : styles.appViewportLight]}><TabFade screen={screen}>{content}</TabFade></View>;
 }
 
 function BrandSplash({ onFinish }: { onFinish: () => void }) {
@@ -239,14 +285,45 @@ function BrandSplash({ onFinish }: { onFinish: () => void }) {
   </Pressable>;
 }
 
+const journeySlides = [
+  { image: require('./assets/onboarding/01-mind-body-meditation.png'), eyebrow: 'ANCIENT WISDOM\nFOR A HEALTHIER TOMORROW', title: 'Welcome to\na Healthier You', copy: 'Personalised Ayurveda for a balanced, brighter tomorrow.' },
+  { image: require('./assets/onboarding/02-understand-yourself-profile.png'), eyebrow: 'SCIENCE MEETS\nAYURVEDA', title: 'Understand\nYour Unique Self', copy: 'Discover your Prakriti, track your current balance and get personalised guidance.' },
+  { image: require('./assets/onboarding/03-healthier-tomorrow-path.png'), eyebrow: 'SMALL STEPS\nBIG IMPACT', title: 'A Healthier Tomorrow\nIs Possible', copy: 'Make better choices today with the wisdom of Ayurveda and the power of AI.' },
+] as const;
+
+function JourneyIntroduction({ step, onNext, onLogin }: { step: number; onNext: () => void; onLogin: () => void }) {
+  const slide = journeySlides[step];
+  const last = step === 2;
+  return <SafeAreaView style={{ flex: 1, backgroundColor: '#F8F5EC' }}><StatusBar style="dark" />
+    <ScrollView contentContainerStyle={{ flexGrow: 1, paddingHorizontal: 26, paddingTop: 20, paddingBottom: 12 }}>
+      <Image source={slide.image} accessibilityLabel={slide.title.replace('\n', ' ')} resizeMode="contain" style={{ width: '100%', height: Math.min(420, Dimensions.get('window').height * (last ? .40 : .48)) }} />
+      <Text style={{ color: '#89998F', fontSize: 9, letterSpacing: 2, lineHeight: 17, marginTop: 22 }}>{slide.eyebrow}</Text>
+      <Text accessibilityRole="header" style={{ color: '#164D39', fontFamily: serif, fontSize: 30, lineHeight: 37, marginTop: 14 }}>{slide.title}</Text>
+      <Text style={{ color: '#77877E', fontSize: 13, lineHeight: 22, marginTop: 14 }}>{slide.copy}</Text>
+      {last ? <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 22 }}>{[['♡', 'Prevent\nLifestyle Diseases'], ['◷', 'Longer\nHealthier Life'], ['♧', 'For You\nand Generations']].map(([icon, label]) => <View key={label} style={{ flex: 1, alignItems: 'center' }}><Text style={{ color: '#397753', fontSize: 20 }}>{icon}</Text><Text style={{ color: '#77877E', fontSize: 10, lineHeight: 16, marginTop: 6, textAlign: 'center' }}>{label}</Text></View>)}</View> : null}
+    </ScrollView>
+    <View style={{ paddingHorizontal: 26, paddingBottom: 18 }}>
+      <View accessibilityLabel={`Introduction ${step + 1} of 3`} style={{ flexDirection: 'row', justifyContent: 'center', gap: 5, marginBottom: 16 }}>{journeySlides.map((_, index) => <View key={index} style={{ width: step === index ? 18 : 6, height: 6, borderRadius: 4, backgroundColor: step === index ? '#164D39' : '#D5D0C3' }} />)}</View>
+      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+        {!last ? <Pressable onPress={onLogin} accessibilityRole="button" style={{ paddingVertical: 14 }}><Text style={{ color: '#829086', fontSize: 13 }}>Skip</Text></Pressable> : null}
+        <Pressable onPress={onNext} accessibilityRole="button" style={{ backgroundColor: '#164D39', borderRadius: 28, minHeight: 48, minWidth: 108, alignItems: 'center', justifyContent: 'center', flex: last ? 1 : undefined }}><Text style={{ color: '#FFF', fontSize: 14, fontWeight: '600' }}>{last ? 'Get started' : 'Next'}  →</Text></Pressable>
+      </View>
+      {last ? <Pressable onPress={onLogin} accessibilityRole="button" style={{ alignItems: 'center', paddingTop: 15 }}><Text style={{ color: '#77877E', fontSize: 12 }}>Already have an account? <Text style={{ color: '#277348' }}>Sign in</Text></Text></Pressable> : null}
+    </View>
+  </SafeAreaView>;
+}
+
 function IntroScreen({ onContinue }: { onContinue: () => void }) {
+  const [step, setStep] = useState(-1);
+  useAndroidBack(() => setStep(value => value - 1), step >= 0);
+  if (step >= 0) return <JourneyIntroduction step={step} onNext={() => step === 2 ? onContinue() : setStep(value => value + 1)} onLogin={onContinue} />;
   return <ScreenFrame>
     <View style={styles.introTop}>
       <Image source={require('./assets/ayurnidaan-logo.png')} accessibilityLabel="Ayurnidaan logo" resizeMode="contain" style={{ width: 240, height: 150 }} />
       <Text style={styles.introKicker}>WELCOME TO</Text><Text style={styles.introTitle}>Ayurnidaan</Text>
       <Text style={styles.introCopy}>Your personalised health journey{`\n`}begins here.</Text>
     </View>
-    <View style={styles.introActions}><PrimaryButton label="Get started" onPress={onContinue} onboarding />
+    <View style={styles.introActions}><PrimaryButton label="Begin my Journey" onPress={() => setStep(0)} onboarding />
       <Pressable onPress={onContinue} style={styles.loginLink}><Text style={styles.muted}>Already have an account? <Text style={styles.link}>Log in</Text></Text></Pressable>
     </View>
   </ScreenFrame>;
@@ -363,6 +440,19 @@ const healthGoalOptions = [
   { label: 'General wellbeing', icon: '♡' },
 ];
 
+const goalArtwork = [
+  { image: require('./assets/goals/01-digestion.webp'), detail: 'Bloating, reflux, irregular appetite' },
+  { image: require('./assets/goals/02-sleep.webp'), detail: 'Falling asleep, waking at night' },
+  { image: require('./assets/goals/03-stress-and-mood.webp'), detail: 'Irritability, restlessness, focus' },
+  { image: require('./assets/goals/04-weight.webp'), detail: 'Gain, loss or metabolic sluggishness' },
+  { image: require('./assets/goals/05-energy.webp'), detail: 'Fatigue, stamina, daily vitality' },
+  { image: require('./assets/goals/06-skin-and-hair.webp'), detail: 'Skin balance, hair and scalp care' },
+  { image: require('./assets/goals/07-joints.webp'), detail: 'Stiffness, mobility, joint comfort' },
+  { image: require('./assets/goals/08-immunity.webp'), detail: 'Resilience and everyday wellbeing' },
+  { image: require('./assets/goals/09-womens-health.webp'), detail: 'Cycle comfort and hormonal wellbeing' },
+  { image: require('./assets/goals/10-general-wellbeing.webp'), detail: 'Balance, healthy habits, feeling well' },
+];
+
 function HealthGoalsScreen({ session, onBack, onComplete, profileEdit = false }: { session: Session | null; onBack: () => void; onComplete: () => void; profileEdit?: boolean }) {
   const existing = Array.isArray(session?.user.user_metadata.health_goals) ? session.user.user_metadata.health_goals.filter((goal: unknown): goal is string => typeof goal === 'string').slice(0, 3) : [];
   const [selected, setSelected] = useState<string[]>(existing);
@@ -378,7 +468,28 @@ function HealthGoalsScreen({ session, onBack, onComplete, profileEdit = false }:
     const { error: saveError } = await supabase.auth.updateUser({ data: { health_goals: selected } });
     setSaving(false); if (saveError) return setError(saveError.message); onComplete();
   }
-  return <SafeAreaView style={styles.goalsSafe}><StatusBar style="dark" /><View style={styles.goalsPage}><BackButton onPress={onBack} onboarding /><Text style={styles.goalsTitle}>What would you like to work on?</Text><Text style={styles.goalsIntro}>Pick up to three. Your food, yoga and product recommendations are ordered around these.</Text><View style={styles.goalsBody}><View style={styles.goalsWrap}>{healthGoalOptions.map(goal => { const active = selected.includes(goal.label); const blocked = !active && selected.length >= 3; return <Pressable key={goal.label} accessibilityRole="checkbox" accessibilityState={{ checked: active, disabled: blocked }} disabled={blocked} onPress={() => toggleGoal(goal.label)} style={({ pressed }) => [styles.goalChip, active && styles.goalChipSelected, blocked && styles.goalChipBlocked, pressed && styles.pressed]}><Text style={[styles.goalIcon, active && styles.goalChipTextSelected]}>{goal.icon}</Text><Text style={[styles.goalChipText, active && styles.goalChipTextSelected]}>{goal.label}</Text></Pressable>; })}</View><Text style={styles.goalsNote}>Goals can be changed any time from your profile.</Text>{error ? <Text style={styles.goalsError}>{error}</Text> : null}</View></View><View style={styles.goalsFooter}><Pressable accessibilityRole="button" disabled={!selected.length || saving} onPress={() => void save()} style={[styles.goalsContinue, !selected.length && styles.goalsContinueDisabled]}>{saving ? <ActivityIndicator color="#FFF" /> : <Text style={styles.goalsContinueText}>{profileEdit ? `Save ${selected.length} ${selected.length === 1 ? 'goal' : 'goals'}` : `Continue with ${selected.length} ${selected.length === 1 ? 'goal' : 'goals'}`}</Text>}</Pressable></View></SafeAreaView>;
+  return <SafeAreaView style={styles.goalsSafe}><StatusBar style="dark" />
+    <ScrollView contentContainerStyle={{ padding: 24, paddingBottom: 28 }} showsVerticalScrollIndicator={false}>
+      <BackButton onPress={onBack} onboarding />
+      <Text style={styles.goalsTitle}>What would you like to work on?</Text>
+      <Text style={styles.goalsIntro}>Pick up to three. Your food, yoga and product recommendations are ordered around these.</Text>
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', rowGap: 12, marginTop: 28 }}>
+        {healthGoalOptions.map((goal, index) => {
+          const active = selected.includes(goal.label);
+          const blocked = !active && selected.length >= 3;
+          const artwork = goalArtwork[index];
+          return <Pressable key={goal.label} accessibilityRole="checkbox" accessibilityLabel={`${goal.label}: ${artwork.detail}`} accessibilityState={{ checked: active, disabled: blocked }} disabled={blocked || saving} onPress={() => toggleGoal(goal.label)} style={({ pressed }) => [{ width: '48%', borderRadius: 16, overflow: 'hidden', borderWidth: 1, borderColor: active ? '#164D39' : '#E1DCCF', backgroundColor: active ? '#EAF2EC' : '#FFF', opacity: blocked ? .55 : 1 }, pressed && styles.pressed]}>
+            <FramedArtwork source={artwork.image} ratio={1.15} label={`${goal.label} illustration`} />
+            <View style={{ position: 'absolute', top: 9, right: 9, width: 22, height: 22, borderRadius: 11, borderWidth: 1.5, borderColor: '#FFF', backgroundColor: active ? '#164D39' : '#FFFFFF66', alignItems: 'center', justifyContent: 'center' }}>{active ? <Text style={{ color: '#FFF', fontWeight: '700' }}>✓</Text> : null}</View>
+            <View style={{ padding: 12, minHeight: 76 }}><Text style={{ color: '#264C3B', fontSize: 13 }}>{goal.label}</Text><Text style={{ color: '#88968D', fontSize: 10, lineHeight: 15, marginTop: 5 }}>{artwork.detail}</Text></View>
+          </Pressable>;
+        })}
+      </View>
+      <Text style={styles.goalsNote}>Goals can be changed any time from your profile.</Text>
+      {error ? <Text style={styles.goalsError}>{error}</Text> : null}
+    </ScrollView>
+    <View style={styles.goalsFooter}><Pressable accessibilityRole="button" disabled={!selected.length || saving} onPress={() => void save()} style={[styles.goalsContinue, !selected.length && styles.goalsContinueDisabled]}>{saving ? <ActivityIndicator color="#FFF" /> : <Text style={styles.goalsContinueText}>{!selected.length ? 'Pick at least one' : `${profileEdit ? 'Save' : 'Continue with'} ${selected.length} ${selected.length === 1 ? 'goal' : 'goals'}`}</Text>}</Pressable></View>
+  </SafeAreaView>;
 }
 
 function TermsConsentScreen({ session, onBack, onComplete }: { session: Session | null; onBack: () => void; onComplete: () => void }) {
@@ -520,11 +631,18 @@ function PrakritiAssessment({ session, onExit, onNextAssessment }: { session: Se
   </SafeAreaView>;
 }
 
+function FramedArtwork({ source, ratio, label, contain = false }: { source: ImageSourcePropType; ratio: number; label: string; contain?: boolean }) {
+  const [frame, setFrame] = useState({ width: 0, height: 0 });
+  return <View onLayout={({ nativeEvent: { layout } }) => setFrame({ width: layout.width, height: layout.height })} style={{ width: '100%', aspectRatio: ratio, overflow: 'hidden', flexShrink: 0 }}>
+    {frame.width > 0 && frame.height > 0 ? <Image source={source} accessibilityLabel={label} resizeMode={contain ? 'contain' : 'cover'} style={{ position: 'absolute', left: 0, top: 0, width: frame.width, height: frame.height }} /> : null}
+  </View>;
+}
+
 function AssessmentIntro({ onBack, onStart }: { onBack?: () => void; onStart: () => void }) {
   return <SafeAreaView style={styles.assessmentSafe}>
     <StatusBar style="dark" />
-    <View style={styles.assessmentIntroPage}>
-      {onBack ? <BackButton onPress={onBack} onboarding /> : null}
+    <ScrollView contentContainerStyle={{ flexGrow: 1 }} showsVerticalScrollIndicator={false}>
+<View><FramedArtwork source={require('./assets/prakriti-intro.png')} ratio={1.06} label="Prakriti: your natural constitution" />{onBack ? <View style={{ position: 'absolute', left: 22, top: 22 }}><BackButton onPress={onBack} onboarding /></View> : null}</View>
       <View style={styles.assessmentIntroContent}>
         <Text style={styles.assessmentIntroEyebrow}>ASSESSMENT 1 OF 2</Text>
         <Text style={styles.assessmentIntroTitle}>Understand your natural{`\n`}health pattern</Text>
@@ -535,8 +653,8 @@ function AssessmentIntro({ onBack, onStart }: { onBack?: () => void; onStart: ()
           <AssessmentFact icon="03" text="Answer for your lifelong tendencies" />
         </View>
       </View>
-      <PrimaryButton label="Start assessment" onPress={onStart} />
-    </View>
+      <View style={{ paddingHorizontal: 23, paddingTop: 16, paddingBottom: 20 }}><PrimaryButton label="Start assessment" onPress={onStart} /></View>
+    </ScrollView>
   </SafeAreaView>;
 }
 
@@ -679,11 +797,11 @@ function CurrentHealthAssessment({ session, onExit, onReturnToStart }: { session
   });
   if (stage === 'intro') return <SafeAreaView style={styles.assessmentSafe}>
     <StatusBar style="dark" />
-    <View style={styles.assessmentIntroPage}>
-      {validationMode !== 'vikriti' ? <BackButton onPress={onExit} onboarding /> : null}
+    <ScrollView contentContainerStyle={{ flexGrow: 1 }} showsVerticalScrollIndicator={false}>
+      <View><FramedArtwork source={require('./assets/vikriti-intro.png')} ratio={1.06} label="Vikriti: your current health" />{validationMode !== 'vikriti' ? <View style={{ position: 'absolute', left: 22, top: 22 }}><BackButton onPress={onExit} onboarding /></View> : null}</View>
       <View style={styles.assessmentIntroContent}>
         <Text style={styles.assessmentIntroEyebrow}>ASSESSMENT 2 OF 2</Text>
-        <Text style={styles.assessmentIntroTitle}>How are you feeling right now?</Text>
+        <Text style={styles.assessmentIntroTitle}>How are you feeling{`\n`}right now?</Text>
         <Text style={styles.assessmentIntroCopy}>Prakriti is your baseline. This one reads your current state, so guidance can respond to what has changed.</Text>
         <View style={styles.assessmentFacts}>
           <AssessmentFact icon="01" text="Your current symptoms" />
@@ -691,8 +809,8 @@ function CurrentHealthAssessment({ session, onExit, onReturnToStart }: { session
           <AssessmentFact icon="03" text="Medications and conditions" />
         </View>
       </View>
-      {contextError ? <Text style={styles.error}>{contextError}</Text> : null}<PrimaryButton label="Start assessment" loading={contextLoading} onPress={() => { if (patientContext) setStage('chat'); else void loadAppPatientContext(); }} />
-    </View>
+      <View style={{ paddingHorizontal: 23, paddingTop: 16, paddingBottom: 20 }}>{contextError ? <Text style={styles.error}>{contextError}</Text> : null}<PrimaryButton label="Start assessment" loading={contextLoading} onPress={() => { if (patientContext) setStage('chat'); else void loadAppPatientContext(); }} /></View>
+    </ScrollView>
   </SafeAreaView>;
   if (stage === 'patient') return <VikritiPatientContextScreen onContinue={(context) => { setPatientContext(context); setStage('chat'); }} />;
   if (stage === 'result' && validationResult) return <VikritiValidationResult session={session} result={validationResult} onRetake={onReturnToStart} />;
@@ -1257,12 +1375,18 @@ function useTimeGreeting() {
   return greeting;
 }
 
+let homeAssessmentCache: { userId: string; prakriti: Record<Dosha, number> | null; hasCurrentHealth: boolean; vikriti: string | null } | null = null;
+
 function HomeScreen({ session, onStartPrakriti, onStartCurrentHealth, onOpenFood, onOpenYoga, onOpenDoctor, onOpenShop, onOpenProfile, onOpenAI }: { session: Session | null; onStartPrakriti: () => void; onStartCurrentHealth: () => void; onOpenFood: () => void; onOpenYoga: () => void; onOpenDoctor: () => void; onOpenShop: () => void; onOpenProfile: () => void; onOpenAI: () => void }) {
   const fullName = session?.user.user_metadata.full_name?.trim();
   const firstName = fullName?.split(/\s+/)[0] || 'there';
-  const [latestPrakriti, setLatestPrakriti] = useState<Record<Dosha, number> | null>(null);
-  const [hasCurrentHealth, setHasCurrentHealth] = useState(false);
-  const [latestVikriti, setLatestVikriti] = useState<string | null>(null);
+  const cached = homeAssessmentCache?.userId === session?.user.id ? homeAssessmentCache : null;
+  const [latestPrakriti, setLatestPrakriti] = useState<Record<Dosha, number> | null>(cached?.prakriti ?? null);
+  const [hasCurrentHealth, setHasCurrentHealth] = useState(cached?.hasCurrentHealth ?? false);
+  const [latestVikriti, setLatestVikriti] = useState<string | null>(cached?.vikriti ?? null);
+  const [statusReady, setStatusReady] = useState(Boolean(cached) || !session);
+  const [statusError, setStatusError] = useState(false);
+  const [refreshAttempt, setRefreshAttempt] = useState(0);
   const [appointment, setAppointment] = useState<{ doctor_name: string; doctor_initials: string; appointment_date: string; appointment_time: string } | null>(null);
   const [recommendedProducts, setRecommendedProducts] = useState<Product[]>(products);
   useEffect(() => {
@@ -1279,9 +1403,14 @@ function HomeScreen({ session, onStartPrakriti, onStartCurrentHealth, onOpenFood
     ]).then(([prakritiResult, healthResult, appointmentResult, productResult, recommendationResult, storedAppointments]) => {
       if (!active) return;
       const result = prakritiResult.data;
-      setLatestPrakriti(result ? { vata: result.vata_percentage, pitta: result.pitta_percentage, kapha: result.kapha_percentage } : null);
-      setHasCurrentHealth(Boolean(healthResult.data?.length));
-      setLatestVikriti(healthResult.data?.[0]?.conclusion ?? null);
+      if (!prakritiResult.error && !healthResult.error) {
+        const snapshot = { userId: session.user.id, prakriti: result ? { vata: result.vata_percentage, pitta: result.pitta_percentage, kapha: result.kapha_percentage } : null, hasCurrentHealth: Boolean(healthResult.data?.length), vikriti: healthResult.data?.[0]?.conclusion ?? null };
+        homeAssessmentCache = snapshot;
+        setLatestPrakriti(snapshot.prakriti);
+        setHasCurrentHealth(snapshot.hasCurrentHealth);
+        setLatestVikriti(snapshot.vikriti);
+        setStatusReady(true); setStatusError(false);
+      } else setStatusError(true);
       const appointmentCandidates = [appointmentResult.data, ...storedAppointments].filter((item): item is NonNullable<typeof item> => Boolean(item && item.appointment_date >= today));
       appointmentCandidates.sort((a, b) => `${a.appointment_date} ${a.appointment_time}`.localeCompare(`${b.appointment_date} ${b.appointment_time}`));
       setAppointment(appointmentCandidates[0] ?? null);
@@ -1292,9 +1421,9 @@ function HomeScreen({ session, onStartPrakriti, onStartCurrentHealth, onOpenFood
         const personalized = names.flatMap(name => allProducts.find(product => product.name === name) ?? []);
         setRecommendedProducts(Array.isArray(recommendationPlan?.recommendations) ? personalized : allProducts.slice(0, 3));
       }
-    });
+    }).catch(() => { if (active) setStatusError(true); });
     return () => { active = false; };
-  }, [session?.user.id]);
+  }, [session?.user.id, refreshAttempt]);
   const hasPrakriti = Boolean(latestPrakriti);
   const assessmentsComplete = hasPrakriti && hasCurrentHealth;
   const dominantDosha = latestPrakriti ? (Object.entries(latestPrakriti).sort(([, a], [, b]) => b - a)[0][0] as Dosha) : null;
@@ -1309,6 +1438,7 @@ function HomeScreen({ session, onStartPrakriti, onStartCurrentHealth, onOpenFood
     { icon: '◉', title: 'Pranayama', detail: 'Nadi Shodhana\n(5 min)' },
     { icon: '◷', title: 'Lifestyle', detail: 'Early Dinner\nBefore 8 PM' },
   ];
+  if (!statusReady) return <SafeAreaView style={[styles.assessmentSafe, { justifyContent: 'center', padding: 24 }]}>{statusError ? <><Text style={styles.error}>Could not load your home screen. Please try again.</Text><PrimaryButton label="Try again" onPress={() => { setStatusError(false); setRefreshAttempt(value => value + 1); }} /></> : <ActivityIndicator accessibilityLabel="Loading your home" color="#164D39" />}</SafeAreaView>;
   if (assessmentsComplete && latestPrakriti && dominantDosha) return <CompletedHome firstName={firstName} percentages={latestPrakriti} dominantDosha={dominantDosha} vikritiConclusion={latestVikriti} appointment={appointment} recommendedProducts={recommendedProducts} onRetakePrakriti={onStartPrakriti} onUpdateHealth={onStartCurrentHealth} onOpenFood={onOpenFood} onOpenYoga={onOpenYoga} onOpenDoctor={onOpenDoctor} onOpenShop={onOpenShop} onOpenProfile={onOpenProfile} onOpenAI={onOpenAI} />;
   return <IncompleteHome firstName={firstName} hasPrakriti={hasPrakriti} appointment={appointment} onStartPrakriti={onStartPrakriti} onStartCurrentHealth={onStartCurrentHealth} onOpenFood={onOpenFood} onOpenYoga={onOpenYoga} onOpenDoctor={onOpenDoctor} onOpenShop={onOpenShop} onOpenProfile={onOpenProfile} onOpenAI={onOpenAI} />;
 }
@@ -1474,6 +1604,7 @@ function FoodScreen({ session, onExit, onOpenDoctor, onOpenShop, onOpenAI }: { s
     setCustomItems(current => current.filter(item => item.id !== id));
     if (session?.user.id && /^[0-9a-f-]{36}$/i.test(id)) await supabase.from('food_intake_items').delete().eq('id', id).eq('user_id', session.user.id);
   }
+  if (foodPlanLoading && tab === 'recommendations') return <FoodPlanLoading onBack={onExit} />;
   if (addingItem) return <AddFoodItemScreen onBack={() => setAddingItem(false)} onSave={item => { void saveFoodItems([{ ...item, source: 'manual' }]); setAddingItem(false); setTab('tracking'); }} />;
   if (scanningMeal) return <ScanMealScreen onBack={() => setScanningMeal(false)} onAddManual={() => { setScanningMeal(false); setAddingItem(true); }} onLog={items => { void saveFoodItems(items); setScanningMeal(false); setTab('tracking'); }} />;
   return <SafeAreaView style={styles.foodSafe}>
@@ -1489,6 +1620,52 @@ function FoodScreen({ session, onExit, onOpenDoctor, onOpenShop, onOpenAI }: { s
   </SafeAreaView>;
 }
 
+function FlowLoading({ kind }: { kind: 'doctors' | 'payment' }) {
+  const rotation = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const animation = Animated.loop(Animated.timing(rotation, { toValue: 1, duration: 2200, useNativeDriver: true }));
+    animation.start();
+    return () => animation.stop();
+  }, [rotation]);
+  const payment = kind === 'payment';
+  const title = payment ? 'Processing your payment' : 'Finding your doctors';
+  return <Modal visible animationType="fade" statusBarTranslucent navigationBarTranslucent onRequestClose={() => {}}>
+    <View style={{ flex: 1, backgroundColor: '#F5F2E9', alignItems: 'center', justifyContent: 'center' }} accessibilityRole="progressbar" accessibilityLabel={title} accessibilityState={{ busy: true }}>
+      <StatusBar style="dark" />
+      <View style={[{ position: 'absolute', width: 225, height: 225, borderRadius: 113, backgroundColor: '#ECECE1' }, payment ? { right: -65, top: -55 } : { left: -65, bottom: -55 }]} />
+      <View style={{ width: 96, height: 96, alignItems: 'center', justifyContent: 'center', marginBottom: 26 }}>
+        <Animated.View style={{ position: 'absolute', width: 96, height: 96, borderRadius: 48, borderWidth: 1.5, borderColor: '#E6E2D6', borderTopColor: '#35654B', transform: [{ rotate: rotation.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] }) }] }} />
+        {payment ? <View style={{ width: 28, height: 20, borderWidth: 2, borderColor: '#245C43', borderRadius: 4 }}><View style={{ height: 2, backgroundColor: '#245C43', marginTop: 4 }} /><View style={{ width: 8, height: 2, backgroundColor: '#C69A3A', margin: 3 }} /></View> : <View><View style={{ width: 20, height: 20, borderWidth: 2, borderTopWidth: 0, borderColor: '#245C43', borderBottomLeftRadius: 10, borderBottomRightRadius: 10 }} /><View style={{ width: 13, height: 13, borderLeftWidth: 2, borderBottomWidth: 2, borderColor: '#245C43', borderBottomLeftRadius: 8, marginLeft: 9 }} /><View style={{ position: 'absolute', right: -4, bottom: 7, width: 9, height: 9, borderRadius: 5, borderWidth: 2, borderColor: '#C69A3A' }} /></View>}
+      </View>
+      <Text style={{ color: '#164D39', fontFamily: serif, fontSize: 22 }}>{title}</Text>
+      <Text style={{ color: '#87968C', fontSize: 9, letterSpacing: 2.3, marginTop: 10 }}>{payment ? 'CONFIRMING YOUR PAYMENT' : 'MATCHING YOUR CONCERNS'}</Text>
+      {payment ? <Text style={{ color: '#87968C', fontSize: 12, lineHeight: 18, textAlign: 'center', maxWidth: 260, marginTop: 28 }}>Do not close the app. This usually takes a few seconds.</Text> : null}
+    </View>
+  </Modal>;
+}
+
+function FoodPlanLoading({ onBack }: { onBack: () => void }) {
+  const rotation = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const animation = Animated.loop(Animated.timing(rotation, { toValue: 1, duration: 2200, useNativeDriver: true }));
+    animation.start();
+    return () => animation.stop();
+  }, [rotation]);
+  return <Modal visible animationType="fade" onRequestClose={onBack} statusBarTranslucent navigationBarTranslucent>
+    <View style={{ flex: 1, backgroundColor: '#F5F2E9', alignItems: 'center', justifyContent: 'center' }} accessibilityRole="progressbar" accessibilityLabel="Preparing your food plan" accessibilityState={{ busy: true }}>
+      <StatusBar style="dark" />
+      <View style={{ position: 'absolute', left: -65, bottom: -55, width: 225, height: 225, borderRadius: 113, backgroundColor: '#ECECE1' }} />
+      <View style={{ width: 96, height: 96, alignItems: 'center', justifyContent: 'center', marginBottom: 26 }}>
+        <Animated.View style={{ position: 'absolute', width: 96, height: 96, borderRadius: 48, borderWidth: 1.5, borderColor: '#E6E2D6', borderTopColor: '#35654B', transform: [{ rotate: rotation.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] }) }] }} />
+        <View style={{ width: 28, height: 16, borderWidth: 2, borderColor: '#245C43', borderBottomLeftRadius: 16, borderBottomRightRadius: 16, marginTop: 10 }} />
+        <Text style={{ position: 'absolute', top: 24, color: '#C69A3A', fontSize: 18 }}>♨</Text>
+      </View>
+      <Text style={{ color: '#164D39', fontFamily: serif, fontSize: 22 }}>Preparing your food plan</Text>
+      <Text style={{ color: '#87968C', fontSize: 9, letterSpacing: 2.3, marginTop: 10 }}>MATCHING MEALS TO YOUR DOSHA</Text>
+    </View>
+  </Modal>;
+}
+
 function FoodRecommendations({ plan, selected, completed, percentage, onToggle, onSelect, onOpenAI }: { plan: FoodPlanData; selected: Record<FoodLogKey, FoodRecipe>; completed: Record<FoodLogKey, boolean>; percentage: number; onToggle: (key: FoodLogKey) => void; onSelect: (key: FoodLogKey, recipe: FoodRecipe) => void; onOpenAI: () => void }) {
   const [expandedMeal, setExpandedMeal] = useState<FoodLogKey | null>(null);
   const meals = ([['morning', 'Breakfast', plan.meals.morning], ['midday', 'Lunch', plan.meals.midday], ['evening', 'Dinner', plan.meals.evening]] as const).map(([key, title, meal]) => ({ key, title, ...meal }));
@@ -1496,7 +1673,7 @@ function FoodRecommendations({ plan, selected, completed, percentage, onToggle, 
   return <ScrollView style={styles.foodBody} contentContainerStyle={styles.foodBodyContent} showsVerticalScrollIndicator={false}>
     <View style={styles.foodProgressCard}><FoodProgressRing percentage={percentage} /><View style={styles.foodProgressCopy}><Text style={styles.foodProgressTitle}>{openCount} {openCount === 1 ? 'meal' : 'meals'} still open</Text><Text style={styles.foodProgressBody}>Tick each meal as you eat it.{`\n`}Your weekly pattern shapes next{`\n`}week’s plan.</Text></View></View>
     <Text style={styles.foodSectionLabel}>TODAY’S MEALS</Text>
-    <View style={styles.foodMealList}>{meals.map(meal => { const recipes = foodRecipeChoices(meal); const chosen = selected[meal.key]; const expanded = expandedMeal === meal.key; return <View key={meal.key} style={[styles.foodMealCard, completed[meal.key] && styles.foodMealCardComplete]}><Pressable accessibilityRole="button" accessibilityState={{ expanded }} onPress={() => setExpandedMeal(current => current === meal.key ? null : meal.key)}><View style={styles.foodMealImagePlaceholder}><Text style={styles.foodMealImageIcon}>▧</Text><Text style={styles.foodMealImagePrompt}>Drop a photo of {meal.title.toLowerCase()}</Text><Text style={styles.foodMealImageBrowse}>or browse files</Text></View><View style={styles.foodMealDetails}><View style={styles.foodMealHeading}><View><Text style={styles.foodMealTitle}>{meal.title}</Text><Text style={styles.foodMealTime}>{meal.time}</Text></View><Pressable accessibilityRole="checkbox" accessibilityLabel={`Mark ${meal.title} as eaten`} accessibilityState={{ checked: completed[meal.key] }} onPress={() => onToggle(meal.key)} style={[styles.foodMealCheck, completed[meal.key] && styles.foodMealCheckComplete]}>{completed[meal.key] ? <Text style={styles.foodMealCheckText}>✓</Text> : null}</Pressable></View><Text style={styles.foodMealCopy}>{chosen.meal}</Text><View style={styles.foodMealTags}>{chosen.tags.map(tag => <View key={`${meal.key}-${tag}`} style={styles.foodMealTag}><Text style={styles.foodMealTagText}>{tag}</Text></View>)}</View><Text style={styles.foodMealChange}>Tap to {expanded ? 'close choices' : 'change the dish'}</Text></View></Pressable>{expanded ? <View style={styles.foodSuggestionPanel}><Text style={styles.foodSuggestionEyebrow}>THREE SUGGESTIONS FOR YOU</Text>{recipes.map(recipe => { const active = recipe.meal === chosen.meal; return <Pressable key={recipe.meal} onPress={() => onSelect(meal.key, recipe)} style={[styles.foodSuggestionCard, active && styles.foodSuggestionCardActive]}><View style={[styles.foodSuggestionRadio, active && styles.foodSuggestionRadioActive]}>{active ? <View style={styles.foodSuggestionRadioDot} /> : null}</View><View style={styles.foodSuggestionCopy}><Text style={styles.foodSuggestionTitle}>{recipe.meal}</Text><Text style={styles.foodSuggestionDescription}>{recipe.description}</Text></View></Pressable>; })}</View> : null}</View>; })}</View>
+    <View style={styles.foodMealList}>{meals.map(meal => { const recipes = foodRecipeChoices(meal); const chosen = selected[meal.key]; const expanded = expandedMeal === meal.key; return <View key={meal.key} style={[styles.foodMealCard, completed[meal.key] && styles.foodMealCardComplete]}><Pressable accessibilityRole="button" accessibilityState={{ expanded }} onPress={() => setExpandedMeal(current => current === meal.key ? null : meal.key)}><FramedArtwork source={foodMealImages[meal.key]} ratio={1455 / 675} label={`${meal.title} meal illustration`} contain /><View style={styles.foodMealDetails}><View style={styles.foodMealHeading}><View><Text style={styles.foodMealTitle}>{meal.title}</Text><Text style={styles.foodMealTime}>{meal.time}</Text></View><Pressable accessibilityRole="checkbox" accessibilityLabel={`Mark ${meal.title} as eaten`} accessibilityState={{ checked: completed[meal.key] }} onPress={() => onToggle(meal.key)} style={[styles.foodMealCheck, completed[meal.key] && styles.foodMealCheckComplete]}>{completed[meal.key] ? <Text style={styles.foodMealCheckText}>✓</Text> : null}</Pressable></View><Text style={styles.foodMealCopy}>{chosen.meal}</Text><View style={styles.foodMealTags}>{chosen.tags.map(tag => <View key={`${meal.key}-${tag}`} style={styles.foodMealTag}><Text style={styles.foodMealTagText}>{tag}</Text></View>)}</View><Text style={styles.foodMealChange}>Tap to {expanded ? 'close choices' : 'change the dish'}</Text></View></Pressable>{expanded ? <View style={styles.foodSuggestionPanel}><Text style={styles.foodSuggestionEyebrow}>THREE SUGGESTIONS FOR YOU</Text>{recipes.map(recipe => { const active = recipe.meal === chosen.meal; return <Pressable key={recipe.meal} onPress={() => onSelect(meal.key, recipe)} style={[styles.foodSuggestionCard, active && styles.foodSuggestionCardActive]}><View style={[styles.foodSuggestionRadio, active && styles.foodSuggestionRadioActive]}>{active ? <View style={styles.foodSuggestionRadioDot} /> : null}</View><View style={styles.foodSuggestionCopy}><Text style={styles.foodSuggestionTitle}>{recipe.meal}</Text><Text style={styles.foodSuggestionDescription}>{recipe.description}</Text></View></Pressable>; })}</View> : null}</View>; })}</View>
     <View style={[styles.foodWhyCard, styles.foodWhyCardAfterMeals]}><Text style={styles.foodWhyEyebrow}>WHY THIS PLAN</Text><Text style={styles.foodWhyCopy}>{plan.why_this_plan}</Text></View>
     <View style={styles.foodGuidanceRow}><View style={styles.foodGuidanceCard}><Text style={styles.foodGuidanceEyebrow}>FAVOUR</Text>{plan.favour.map(item => <View key={item} style={styles.foodGuidanceBulletRow}><Text style={styles.foodGuidanceBullet}>•</Text><Text style={styles.foodGuidanceItemText}>{item}</Text></View>)}</View><View style={styles.foodGuidanceCard}><Text style={[styles.foodGuidanceEyebrow, styles.foodLimitEyebrow]}>LIMIT</Text>{plan.limit.map(item => <View key={item} style={styles.foodGuidanceBulletRow}><Text style={[styles.foodGuidanceBullet, styles.foodLimitBullet]}>•</Text><Text style={styles.foodGuidanceItemText}>{item}</Text></View>)}</View></View>
     <Pressable onPress={onOpenAI} style={({ pressed }) => [styles.foodAiButton, pressed && styles.pressed]}><Text style={styles.foodAiButtonText}>✧   More recommendations from AI Vaidya</Text></Pressable>
@@ -1942,8 +2119,8 @@ function CompletedHome({ firstName, percentages, dominantDosha, vikritiConclusio
   const dominantName = dominantDosha.charAt(0).toUpperCase() + dominantDosha.slice(1);
   const greeting = useTimeGreeting();
   const planItems = [
-    { icon: '🍴', title: 'Food', timing: 'Morning', detail: 'Dal khichdi with curd, warm and lightly spiced', progress: '100%', color: '#4C8E6B' },
-    { icon: '𑁍', title: 'Yoga', timing: '5 min', detail: 'Pavanamuktasana, before breakfast', progress: '58%', color: '#C89535' },
+    { icon: '🍴', title: 'Food', image: require('./assets/home-food-clay.png'), timing: 'Morning', detail: 'Dal khichdi with curd, warm and lightly spiced', progress: '100%', color: '#4C8E6B' },
+    { icon: '𑁍', title: 'Yoga', image: require('./assets/home-yoga-clay.png'), timing: '5 min', detail: 'Pavanamuktasana, before breakfast', progress: '58%', color: '#C89535' },
   ];
   const productsForHome = recommendedProducts.slice(0, 8);
   const secondaryDoshas = (Object.keys(percentages) as Dosha[]).filter(dosha => dosha !== dominantDosha);
@@ -1959,7 +2136,16 @@ function CompletedHome({ firstName, percentages, dominantDosha, vikritiConclusio
         </View>
         {appointment ? <Pressable onPress={onOpenDoctor} style={styles.homeAppointmentStrip}><View style={styles.homeAppointmentIcon}><Text style={styles.homeAppointmentIconText}>♧</Text></View><View style={styles.homeAppointmentCopy}><Text style={styles.homeAppointmentEyebrow}>UPCOMING APPOINTMENT</Text><Text numberOfLines={1} style={styles.homeAppointmentText}>{appointment.doctor_name} · {formatAppointmentDate(appointment.appointment_date)} at {appointment.appointment_time}</Text></View></Pressable> : null}
         <View style={styles.homeSectionHeading}><Text style={styles.homeSectionTitle}>Today’s plan</Text></View>
-        <View style={styles.homePlanGrid}>{planItems.map(item => <Pressable key={item.title} onPress={item.title === 'Food' ? onOpenFood : item.title === 'Yoga' ? onOpenYoga : undefined} style={({ pressed }) => [styles.homePlanCard, pressed && styles.pressed]}><View style={styles.homePlanTop}><View style={styles.homePlanIcon}><Text style={styles.homePlanIconText}>{item.icon}</Text></View><Text style={styles.homePlanTitle}>{item.title}</Text><Text style={styles.homePlanTiming}>{item.timing}</Text></View><Text style={styles.homePlanDetail}>{item.detail}</Text><View style={styles.homePlanTrack}><View style={[styles.homePlanProgress, { backgroundColor: item.color, width: item.progress as `${number}%` }]} /></View></Pressable>)}</View>
+        <View style={styles.homePlanGrid}>{planItems.map(item => (
+          <Pressable key={item.title} accessibilityRole="button" accessibilityLabel={`Open ${item.title}`} onPress={item.title === 'Food' ? onOpenFood : onOpenYoga} style={({ pressed }) => [styles.homePlanCard, { padding: 0, overflow: 'hidden' }, pressed && styles.pressed]}>
+            <FramedArtwork source={item.image} ratio={1.8} label={item.title === 'Food' ? 'Clay bowls of khichdi and curd' : 'Clay figure practising Pavanamuktasana'} />
+            <View style={{ padding: 12, flex: 1 }}>
+              <View style={styles.homePlanTop}><View style={styles.homePlanIcon}><Text style={styles.homePlanIconText}>{item.icon}</Text></View><Text style={styles.homePlanTitle}>{item.title}</Text><Text style={styles.homePlanTiming}>{item.timing}</Text></View>
+              <Text style={styles.homePlanDetail}>{item.detail}</Text>
+              <View style={styles.homePlanTrack}><View style={[styles.homePlanProgress, { backgroundColor: item.color, width: item.progress as `${number}%` }]} /></View>
+            </View>
+          </Pressable>
+        ))}</View>
         <View style={styles.homeSectionHeading}><Text style={styles.homeSectionTitle}>Recommended for you</Text><Pressable onPress={onOpenShop}><Text style={styles.homeSectionAction}>Shop</Text></Pressable></View>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.homeProductRow}>{productsForHome.map(product => <Pressable key={product.id} onPress={onOpenShop} style={styles.homeProductCard}><View style={styles.homeProductVisual}><Text style={styles.homeProductBrand}>AYUR</Text><Text style={styles.homeProductGlyph}>{productGlyph(product.name)}</Text></View><Text numberOfLines={1} style={styles.homeProductName}>{product.name}</Text><Text numberOfLines={1} style={styles.homeProductBenefit}>{product.categories[0] ?? 'General wellness'}</Text><View style={styles.homeProductFooter}><Text style={styles.homeProductPrice}>₹{product.price}</Text><View style={styles.homeProductAdd}><Text style={styles.homeProductAddText}>+</Text></View></View></Pressable>)}</ScrollView>
         <Text style={styles.homeExploreEyebrow}>EXPLORE</Text><View style={styles.homeExploreWrap}><Pressable onPress={onOpenDoctor} style={styles.homeExplorePill}><Text style={styles.homeExploreText}>Panchakarma</Text></Pressable><Pressable onPress={onOpenAI} style={styles.homeExplorePill}><Text style={styles.homeExploreText}>AI assistant</Text></Pressable><Pressable onPress={onOpenShop} style={styles.homeExplorePill}><Text style={styles.homeExploreText}>Supplements</Text></Pressable><Pressable onPress={onOpenProfile} style={styles.homeExplorePill}><Text style={styles.homeExploreText}>My health profile</Text></Pressable></View>
@@ -2237,9 +2423,41 @@ function HelpSupportModal({ visible, onClose }: { visible: boolean; onClose: () 
 }
 function ProfileAccountRow({ label, detail, onPress }: { label: string; detail: string; onPress?: () => void | Promise<void> }) { return <Pressable accessibilityRole="button" disabled={!onPress} onPress={onPress} style={({ pressed }) => [styles.profileV2MenuRow, pressed && styles.pressed]}><Text style={styles.profileV2MenuLabel}>{label}</Text><Text numberOfLines={1} style={styles.profileV2MenuDetail}>{detail}</Text><Text style={styles.profileV2MenuChevron}>›</Text></Pressable>; }
 
+function DeleteAccountModal({ visible, onClose, onDeleted }: { visible: boolean; onClose: () => void; onDeleted: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  async function deleteAccount() {
+    if (busy) return;
+    setBusy(true); setError('');
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) throw new Error('Please sign in again before deleting your account.');
+      const { data, error: deletionError } = await supabase.functions.invoke('delete-account', { body: { confirmation: 'DELETE_MY_ACCOUNT' } });
+      if (deletionError || !data?.deleted) throw new Error('Could not delete your account. Please try again.');
+      homeAssessmentCache = null;
+      try {
+        const keys = await AsyncStorage.getAllKeys();
+        await AsyncStorage.multiRemove(keys.filter(key => key.includes(session.user.id)));
+      } catch { /* Continue signing out after server deletion even if local cleanup fails. */ }
+      await supabase.auth.signOut({ scope: 'local' });
+      onDeleted();
+    } catch (failure) { setError(failure instanceof Error ? failure.message : 'Could not delete your account.'); }
+    finally { setBusy(false); }
+  }
+  return <Modal visible={visible} transparent animationType="fade" onRequestClose={() => { if (!busy) onClose(); }}><View style={{ flex: 1, backgroundColor: '#102D2299', justifyContent: 'center', padding: 28 }}><View style={{ backgroundColor: '#F8F5EC', borderRadius: 20, borderWidth: 1, borderColor: '#DED8CA', padding: 22 }}>
+    <Text style={{ color: '#954D39', fontSize: 8, letterSpacing: 2, marginBottom: 14 }}>DELETE ACCOUNT</Text>
+    <Text style={{ color: '#193D30', fontFamily: serif, fontSize: 23 }}>Delete your account permanently?</Text>
+    <Text style={{ color: '#748279', fontSize: 13, lineHeight: 20, marginTop: 14, marginBottom: 16 }}>Your Prakriti results, health history, prescriptions and orders will be removed. Appointments already booked will be cancelled. This cannot be undone.</Text>
+    {error ? <Text style={styles.error}>{error}</Text> : null}
+    <Pressable accessibilityRole="button" disabled={busy} onPress={() => void deleteAccount()} style={{ backgroundColor: '#944F3B', borderRadius: 12, minHeight: 48, alignItems: 'center', justifyContent: 'center' }}>{busy ? <ActivityIndicator color="#FFF" /> : <Text style={{ color: '#FFF', fontWeight: '600' }}>Delete my account</Text>}</Pressable>
+    <Pressable accessibilityRole="button" disabled={busy} onPress={onClose} style={{ borderWidth: 1, borderColor: '#E0DACC', borderRadius: 12, minHeight: 44, alignItems: 'center', justifyContent: 'center', marginTop: 10 }}><Text style={{ color: '#193D30' }}>Keep my account</Text></Pressable>
+  </View></View></Modal>;
+}
+
 function ProfileMenuDrawer({ fullName, rows, loggingOut, progress, onClose, onSelect, onLogout }: { fullName: string; rows: { label: string; detail: string; onPress?: () => void | Promise<void> }[]; loggingOut: boolean; progress: Animated.Value; onClose: () => void; onSelect: (action: () => void | Promise<void>) => void; onLogout: () => void }) {
+  const [deletionOpen, setDeletionOpen] = useState(false);
   const panelWidth = Dimensions.get('window').width * 0.77;
-  return <View style={styles.profileDrawerLayer}><Animated.View style={[styles.profileDrawerScrim, { opacity: progress.interpolate({ inputRange: [0, 1], outputRange: [0, .46] }) }]}><Pressable accessibilityLabel="Close profile menu" onPress={onClose} style={styles.profileDrawerScrimPress} /></Animated.View><Animated.View style={[styles.profileDrawerPanel, { width: panelWidth, transform: [{ translateX: progress.interpolate({ inputRange: [0, 1], outputRange: [panelWidth, 0] }) }] }]}><View style={styles.profileDrawerHeader}><View><Text style={styles.profileDrawerEyebrow}>PROFILE  &  ACCOUNT</Text><Text style={styles.profileDrawerName}>{fullName}</Text></View><Pressable accessibilityLabel="Close profile menu" onPress={onClose} style={styles.profileDrawerClose}><Text style={styles.profileDrawerCloseText}>×</Text></Pressable></View><View style={styles.profileDrawerMenu}>{rows.map(row => <Pressable key={row.label} disabled={!row.onPress} onPress={() => row.onPress && onSelect(row.onPress)} style={({ pressed }) => [styles.profileDrawerRow, pressed && styles.pressed]}><View style={styles.profileDrawerRowCopy}><Text style={styles.profileDrawerRowLabel}>{row.label}</Text><Text style={styles.profileDrawerRowDetail}>{row.detail}</Text></View><Text style={styles.profileDrawerChevron}>›</Text></Pressable>)}</View><View style={styles.profileDrawerFooter}><Pressable disabled={loggingOut} onPress={onLogout} style={styles.profileDrawerLogout}>{loggingOut ? <ActivityIndicator color="#B85A47" /> : <Text style={styles.profileDrawerLogoutText}>Log out</Text>}</Pressable></View></Animated.View></View>;
+  return <View style={styles.profileDrawerLayer}><Animated.View style={[styles.profileDrawerScrim, { opacity: progress.interpolate({ inputRange: [0, 1], outputRange: [0, .46] }) }]}><Pressable accessibilityLabel="Close profile menu" onPress={onClose} style={styles.profileDrawerScrimPress} /></Animated.View><Animated.View style={[styles.profileDrawerPanel, { width: panelWidth, transform: [{ translateX: progress.interpolate({ inputRange: [0, 1], outputRange: [panelWidth, 0] }) }] }]}><View style={styles.profileDrawerHeader}><View><Text style={styles.profileDrawerEyebrow}>PROFILE  &  ACCOUNT</Text><Text style={styles.profileDrawerName}>{fullName}</Text></View><Pressable accessibilityLabel="Close profile menu" onPress={onClose} style={styles.profileDrawerClose}><Text style={styles.profileDrawerCloseText}>×</Text></Pressable></View><View style={styles.profileDrawerMenu}>{rows.map(row => <Pressable key={row.label} disabled={!row.onPress} onPress={() => row.onPress && onSelect(row.onPress)} style={({ pressed }) => [styles.profileDrawerRow, pressed && styles.pressed]}><View style={styles.profileDrawerRowCopy}><Text style={styles.profileDrawerRowLabel}>{row.label}</Text><Text style={styles.profileDrawerRowDetail}>{row.detail}</Text></View><Text style={styles.profileDrawerChevron}>›</Text></Pressable>)}</View><View style={styles.profileDrawerFooter}><Pressable disabled={loggingOut} onPress={onLogout} style={styles.profileDrawerLogout}>{loggingOut ? <ActivityIndicator color="#B85A47" /> : <Text style={styles.profileDrawerLogoutText}>Log out</Text>}</Pressable><Pressable onPress={() => setDeletionOpen(true)} style={{ paddingTop: 14, alignItems: 'center' }}><Text style={{ color: '#954D39', fontSize: 12 }}>Delete account</Text></Pressable></View></Animated.View><DeleteAccountModal visible={deletionOpen} onClose={() => setDeletionOpen(false)} onDeleted={onLogout} /></View>;
 }
 
 type DietPreference = 'vegetarian' | 'non-vegetarian' | 'vegan' | 'pescatarian';
@@ -2345,6 +2563,7 @@ function PaymentScreen({ purpose, amount, summary, requestPayload, onBack, onPai
   const [method, setMethod] = useState<PaymentMethod>('upi');
   const [coupon, setCoupon] = useState('');
   const [paying, setPaying] = useState(false); const [error, setError] = useState('');
+  const [verifying, setVerifying] = useState(false);
   const methods: { key: PaymentMethod; title: string; detail: string; aside?: string }[] = [
     { key: 'upi', title: 'UPI', detail: 'GPay, PhonePe, Paytm or any UPI app', aside: 'Fastest' },
     { key: 'card', title: 'Card', detail: 'Credit or debit · Visa, Mastercard, RuPay' },
@@ -2356,10 +2575,13 @@ function PaymentScreen({ purpose, amount, summary, requestPayload, onBack, onPai
     return functionError instanceof Error ? functionError.message : '';
   }
   async function pay() {
+    if (paying) return;
     setPaying(true); setError('');
     try {
       const redirectUrl = AuthSession.makeRedirectUri({ scheme: process.env.EXPO_PUBLIC_APP_ENV === 'development' ? 'ayurnidaan-dev' : 'ayurnidaan', path: 'payment-callback' });
       if (!PAYMENT_PROCESSING_ENABLED) {
+        setVerifying(true);
+        await new Promise(resolve => setTimeout(resolve, 700));
         await onPaid(`demo-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
         return;
       }
@@ -2368,13 +2590,15 @@ function PaymentScreen({ purpose, amount, summary, requestPayload, onBack, onPai
       if (Platform.OS !== 'web') {
         if (!data.checkout_options || typeof data.checkout_options !== 'object') throw new Error('Native checkout configuration is unavailable.');
         const payment = await openNativeRazorpayCheckout(data.checkout_options as RazorpayCheckoutOptions);
+        setVerifying(true);
         const { data: verifiedData, error: verificationError } = await supabase.functions.invoke('razorpay-payment', { body: { action: 'verify_native', payment_ref: data.payment_ref, ...payment } });
         const resourceId = verifiedData?.payment?.resource_id;
         if (verificationError || verifiedData?.payment?.status !== 'paid' || typeof resourceId !== 'string') throw new Error(await paymentErrorMessage(verificationError, verifiedData) || 'Payment verification failed.');
-        onPaid(resourceId);
+        await onPaid(resourceId);
         return;
       }
       const result = await WebBrowser.openAuthSessionAsync(data.checkout_url, redirectUrl);
+      setVerifying(true);
       const callbackStatus = result.type === 'success' ? new URL(result.url).searchParams.get('status') : null;
       if (result.type !== 'success' || callbackStatus !== 'success') { setError('Payment was cancelled. No amount was charged.'); return; }
       let paidResource = '';
@@ -2384,13 +2608,16 @@ function PaymentScreen({ purpose, amount, summary, requestPayload, onBack, onPai
         else if (attempt < 7) await new Promise(resolve => setTimeout(resolve, 1000));
       }
       if (!paidResource) throw new Error('Payment verification is still pending. Please check again shortly.');
-      onPaid(paidResource);
+      await onPaid(paidResource);
     } catch (paymentError) {
+      setVerifying(true);
+      await new Promise(resolve => setTimeout(resolve, 700));
       const nativeError = paymentError as { description?: unknown };
       setError(typeof nativeError?.description === 'string' ? nativeError.description : paymentError instanceof Error ? paymentError.message : 'Payment was cancelled or could not be completed.');
     }
-    finally { setPaying(false); }
+    finally { setVerifying(false); setPaying(false); }
   }
+  if (verifying) return <FlowLoading kind="payment" />;
   return <SafeAreaView style={styles.paymentSafe}><StatusBar style="dark" /><KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.paymentScreen}><ScrollView contentContainerStyle={styles.paymentContent} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}><BackButton onPress={onBack} onboarding /><View style={styles.paymentHeading}><View><Text style={styles.paymentEyebrow}>{purpose === 'appointment' ? 'CONSULTATION' : 'ORDER'}</Text><Text style={styles.paymentTitle}>Payment</Text></View><Text style={styles.paymentAmount}>₹{amount.toLocaleString('en-IN')}</Text></View><View style={styles.paymentSummaryCard}><View style={styles.paymentSummaryIcon}><Text style={styles.paymentSummaryIconText}>{summary.icon}</Text></View><View style={styles.paymentSummaryCopy}><Text style={styles.paymentSummaryTitle}>{summary.title}</Text><Text style={styles.paymentSummaryDetail}>{summary.detail}</Text></View></View><Text style={styles.paymentSectionLabel}>PAY USING</Text><View style={styles.paymentMethods}>{methods.map(option => <Pressable key={option.key} onPress={() => setMethod(option.key)} style={[styles.paymentMethod, method === option.key && styles.paymentMethodSelected]}><View style={[styles.paymentRadio, method === option.key && styles.paymentRadioSelected]}>{method === option.key ? <View style={styles.paymentRadioDot} /> : null}</View><View style={styles.paymentMethodCopy}><Text style={styles.paymentMethodTitle}>{option.title}</Text><Text style={styles.paymentMethodDetail}>{option.detail}</Text></View>{option.aside ? <Text style={styles.paymentMethodAside}>{option.aside}</Text> : null}</Pressable>)}</View><View style={styles.paymentUnavailableMethod}><View style={styles.paymentRadio} /><View><Text style={styles.paymentMethodTitle}>Ayurnidaan wallet</Text><Text style={styles.paymentMethodDetail}>Coming soon</Text></View></View><View style={styles.paymentUnavailableMethod}><View style={styles.paymentRadio} /><View><Text style={styles.paymentMethodTitle}>{purpose === 'appointment' ? 'Pay at the clinic' : 'Cash on delivery'}</Text><Text style={styles.paymentMethodDetail}>Unavailable for this checkout</Text></View></View>{method === 'upi' ? <View style={styles.paymentUpiCard}><Text style={styles.paymentFieldLabel}>UPI APPS</Text><Text style={styles.paymentInputHelp}>Continue to Razorpay to choose an available UPI app on this device. Your payment details will be filled automatically.</Text></View> : null}<Text style={styles.paymentSectionLabel}>COUPON</Text><View style={styles.paymentCouponRow}><TextInput value={coupon} onChangeText={setCoupon} autoCapitalize="characters" placeholder="ENTER CODE" placeholderTextColor="#7E8781" style={[styles.paymentInput, styles.paymentCouponInput]} /><Pressable style={styles.paymentCouponButton}><Text style={styles.paymentCouponText}>Apply</Text></Pressable></View><Text style={styles.paymentSectionLabel}>AMOUNT</Text><View style={styles.paymentBreakdown}><View style={styles.paymentBreakdownRow}><Text style={styles.paymentBreakdownLabel}>{purpose === 'appointment' ? 'Consultation fee' : 'Subtotal'}</Text><Text style={styles.paymentBreakdownValue}>₹{amount.toLocaleString('en-IN')}</Text></View>{purpose === 'shop' ? <View style={styles.paymentBreakdownRow}><Text style={styles.paymentBreakdownLabel}>Delivery</Text><Text style={styles.paymentBreakdownValue}>Free</Text></View> : null}<View style={[styles.paymentBreakdownRow, styles.paymentBreakdownTotal]}><Text style={styles.paymentTotalLabel}>Total payable</Text><Text style={styles.paymentTotalValue}>₹{amount.toLocaleString('en-IN')}</Text></View></View><Text style={styles.paymentSecurity}>{PAYMENT_PROCESSING_ENABLED ? '♢  Payments are processed by Razorpay. Card and UPI credentials are never stored by Ayurnidaan.' : 'Test mode · No payment will be collected. Your confirmation will be saved on this device.'}</Text>{error ? <Text style={styles.paymentError}>{error}</Text> : null}</ScrollView><View style={styles.paymentFooter}><Pressable disabled={paying} onPress={() => void pay()} style={[styles.paymentPayButton, paying && styles.foodButtonDisabled]}>{paying ? <ActivityIndicator color="#FFF" /> : <Text style={styles.paymentPayText}>Pay ₹{amount.toLocaleString('en-IN')}</Text>}</Pressable><Text style={styles.paymentEncrypted}>{PAYMENT_PROCESSING_ENABLED ? 'Secured by 256-bit encryption' : 'Temporary test checkout'}</Text></View></KeyboardAvoidingView></SafeAreaView>;
 }
 const shopCategories = ['Digestive Health', 'Stress & Sleep', 'Energy & Vitality', 'Immunity & Wellness', 'Joint & Muscle Health', 'Respiratory Health', 'Skin & Hair', "Women's Wellness", "Men's Wellness", 'Urinary & Kidney Health', 'Heart & Circulatory Health', 'Weight & Metabolism', 'Detox & Cleansing', 'Cognitive & Memory', 'General Wellness'];
@@ -2593,6 +2820,12 @@ const doctors: Doctor[] = [
 ];
 
 function DoctorFlow({ session, onExit, onOpenAppointments, onOpenFood, onOpenShop, onOpenAI }: { session: Session | null; onExit: () => void; onOpenAppointments: () => void; onOpenFood: () => void; onOpenShop: () => void; onOpenAI: () => void }) {
+  const [findingDoctors, setFindingDoctors] = useState(false);
+  useEffect(() => {
+    if (!findingDoctors) return;
+    const timer = setTimeout(() => { setStage('matches'); setFindingDoctors(false); }, 700);
+    return () => clearTimeout(timer);
+  }, [findingDoctors]);
   const [stage, setStage] = useState<'landing' | 'intake' | 'matches' | 'profile' | 'schedule' | 'payment' | 'confirmed'>('landing');
   const [doctor, setDoctor] = useState(doctors[0]);
   const [appointmentDate, setAppointmentDate] = useState(() => localDateKey(new Date()));
@@ -2641,17 +2874,18 @@ function DoctorFlow({ session, onExit, onOpenAppointments, onOpenFood, onOpenSho
     setAppointmentDate(nextDate); setTime(nextTime); setConsultationType(nextType);
     setSaveError(''); setStage('payment');
   }
+  if (findingDoctors) return <FlowLoading kind="doctors" />;
   if (stage === 'confirmed') return <AppointmentConfirmation doctor={doctor} date={appointmentDate} time={time} consultationType={consultationType} onAppointments={onOpenAppointments} onHome={onExit} />;
   if (stage === 'payment') return <PaymentScreen purpose="appointment" amount={doctor.fee} summary={{ icon: '♧', title: doctor.name, detail: `${consultationType} · ${formatAppointmentDate(appointmentDate)} · ${time} · 30 minutes` }} requestPayload={{ appointment: { doctor_name: doctor.name, doctor_initials: doctor.initials, appointment_date: appointmentDate, appointment_time: time, consultation_type: consultationType, patient_notes: notes.trim() || null, symptom_tags: selectedTags, attachments: attachments.map(item => ({ name: item.name, size: item.size, storage_path: item.storagePath, type: item.type })) } }} onBack={() => setStage('schedule')} onPaid={async appointmentId => { if (session?.user.id) await prependStoredItem(demoAppointmentsKey(session.user.id), { id: appointmentId, doctor_name: doctor.name, doctor_initials: doctor.initials, appointment_date: appointmentDate, appointment_time: time, consultation_type: consultationType, status: 'booked', discussion_summary: null, prescription: null }); setStage('confirmed'); }} />;
   if (stage === 'schedule') return <AppointmentScheduler doctor={doctor} saving={saving} error={saveError} onBack={() => setStage('profile')} onConfirm={confirmAppointment} />;
   if (stage === 'profile') return <DoctorProfile doctor={doctor} onBack={() => setStage('matches')} onBook={() => setStage('schedule')} />;
   if (stage === 'matches') return <DoctorMatchesScreen selectedTags={selectedTags} attachments={attachments} recommended={recommendedDoctors} specialtyFilter={specialtyFilter} showAll={showAllDoctors || !selectedTags.length} onBack={() => setStage('intake')} onFilter={setSpecialtyFilter} onToggleAll={() => setShowAllDoctors(value => !value)} onSelectDoctor={selectDoctor} onExit={onExit} onDoctorHome={() => setStage('landing')} onOpenFood={onOpenFood} onOpenShop={onOpenShop} onOpenAI={onOpenAI} />;
-  if (stage === 'intake') return <DoctorIntakeScreen session={session} notes={notes} selectedTags={selectedTags} attachments={attachments} onNotes={setNotes} onToggleTag={tag => setSelectedTags(current => current.includes(tag) ? current.filter(item => item !== tag) : [...current, tag])} onAddAttachment={attachment => setAttachments(current => [...current, attachment])} onRemoveAttachment={async item => { await supabase.storage.from('doctor-intake-files').remove([item.storagePath]); setAttachments(current => current.filter(attachment => attachment.id !== item.id)); }} onBack={() => setStage('landing')} onFind={() => { setShowAllDoctors(false); setStage('matches'); }} onSkip={() => { setSelectedTags([]); setShowAllDoctors(true); setStage('matches'); }} />;
+if (stage === 'intake') return <DoctorIntakeScreen session={session} notes={notes} selectedTags={selectedTags} attachments={attachments} onNotes={setNotes} onToggleTag={tag => setSelectedTags(current => current.includes(tag) ? current.filter(item => item !== tag) : [...current, tag])} onAddAttachment={attachment => setAttachments(current => [...current, attachment])} onRemoveAttachment={async item => { await supabase.storage.from('doctor-intake-files').remove([item.storagePath]); setAttachments(current => current.filter(attachment => attachment.id !== item.id)); }} onBack={() => setStage('landing')} onFind={() => { setShowAllDoctors(false); Keyboard.dismiss(); setFindingDoctors(true); }} onSkip={() => { setSelectedTags([]); setShowAllDoctors(true); Keyboard.dismiss(); setFindingDoctors(true); }} />;
   return <DoctorLanding upcomingCount={upcomingAppointmentCount} onBook={() => setStage('intake')} onAppointments={onOpenAppointments} onHome={onExit} onDoctor={() => setStage('landing')} onAI={onOpenAI} onFood={onOpenFood} onShop={onOpenShop} />;
 }
 
 function DoctorLanding({ upcomingCount, onBook, onAppointments, onHome, onDoctor, onAI, onFood, onShop }: { upcomingCount: number; onBook: () => void; onAppointments: () => void; onHome: () => void; onDoctor: () => void; onAI: () => void; onFood: () => void; onShop: () => void }) {
-  return <SafeAreaView style={styles.doctorLandingSafe}><StatusBar style="dark" /><View style={styles.doctorLandingPage}><View style={styles.doctorLandingContent}><Text style={styles.doctorLandingEyebrow}>DOCTOR</Text><Text style={styles.doctorLandingTitle}>Ayurnidaan has trusted{`\n`}Ayurvedic doctors</Text><Text style={styles.doctorLandingBody}>Every doctor on Ayurnidaan is verified, registered and reviewed by patients. Consult online or in clinic, and keep prescriptions and follow-ups in one place.</Text><Pressable onPress={onBook} style={({ pressed }) => [styles.doctorLandingPrimary, pressed && styles.pressed]}><Text style={styles.doctorLandingPrimaryText}>Book a consultation</Text></Pressable><Pressable onPress={onAppointments} style={({ pressed }) => [styles.doctorLandingSecondary, pressed && styles.pressed]}><Text style={styles.doctorLandingSecondaryText}>My appointments</Text><Text style={styles.doctorLandingAppointmentCount}>{upcomingCount} upcoming</Text></Pressable><Text style={styles.doctorLandingSafety}>For urgent symptoms, contact emergency services rather than booking online.</Text></View></View><View style={[styles.bottomNav, styles.doctorBottomNav]}><NavItem icon="⌂" label="Home" onPress={onHome} /><NavItem icon="✚" label="Doctor" active onPress={onDoctor} /><NavItem icon="♧" label="AI" onPress={onAI} /><NavItem icon="⌒" label="Food" onPress={onFood} /><NavItem icon="🛍" label="Shop" onPress={onShop} /></View></SafeAreaView>;
+  return <SafeAreaView style={styles.doctorLandingSafe}><StatusBar style="dark" /><ScrollView style={{ flex: 1 }} contentContainerStyle={{ flexGrow: 1 }} showsVerticalScrollIndicator={false}><FramedArtwork source={require('./assets/doctor-landing.png')} ratio={1.16} label="Ayurnidaan doctors" /><View style={styles.doctorLandingContent}><Text style={styles.doctorLandingEyebrow}>DOCTOR</Text><Text style={styles.doctorLandingTitle}>Ayurnidaan has trusted{`\n`}Ayurvedic doctors</Text><Text style={styles.doctorLandingBody}>Every doctor on Ayurnidaan is verified, registered and reviewed by patients. Consult online or in clinic, and keep prescriptions and follow-ups in one place.</Text><Pressable onPress={onBook} style={({ pressed }) => [styles.doctorLandingPrimary, pressed && styles.pressed]}><Text style={styles.doctorLandingPrimaryText}>Book a consultation</Text></Pressable><Pressable onPress={onAppointments} style={({ pressed }) => [styles.doctorLandingSecondary, pressed && styles.pressed]}><Text style={styles.doctorLandingSecondaryText}>My appointments</Text><Text style={styles.doctorLandingAppointmentCount}>{upcomingCount} upcoming</Text></Pressable><Text style={styles.doctorLandingSafety}>For urgent symptoms, contact emergency services rather than booking online.</Text></View></ScrollView><View style={[styles.bottomNav, styles.doctorBottomNav, { position: 'relative', bottom: undefined, left: undefined, right: undefined }]}><NavItem icon="⌂" label="Home" onPress={onHome} /><NavItem icon="✚" label="Doctor" active onPress={onDoctor} /><NavItem icon="♧" label="AI" onPress={onAI} /><NavItem icon="⌒" label="Food" onPress={onFood} /><NavItem icon="🛍" label="Shop" onPress={onShop} /></View></SafeAreaView>;
 }
 
 const doctorTags: DoctorTag[] = ['Acidity', 'Digestion', 'Sleep', 'Stress', 'Joint pain', 'Skin', 'Fatigue', 'Immunity', "Women's health", 'Weight'];
@@ -3137,7 +3371,7 @@ const foodStyles = StyleSheet.create({
   foodMealList: { gap: 9 },
   foodMealCard: { backgroundColor: '#FFF', borderColor: '#DED9CE', borderRadius: 11, borderWidth: 1, minHeight: 101, overflow: 'hidden' },
   foodMealCardComplete: { backgroundColor: '#EAF3ED', borderColor: '#164D39' },
-  foodMealImagePlaceholder: { alignItems: 'center', backgroundColor: '#E8EFEB', borderBottomColor: '#91A89C', borderBottomWidth: 1, borderStyle: 'dashed', height: 140, justifyContent: 'center' },
+  foodMealImage: { width: '100%', aspectRatio: 1455 / 675, backgroundColor: '#E8EFEB' },
   foodMealImageIcon: { color: '#7E958A', fontSize: 23 },
   foodMealImagePrompt: { color: '#52675D', fontSize: 10, marginTop: 8 },
   foodMealImageBrowse: { color: '#52675D', fontSize: 8, marginTop: 4, textDecorationLine: 'underline' },
@@ -3542,7 +3776,7 @@ const styles = StyleSheet.create({
   dobCalendarBackdrop: { alignItems: 'center', backgroundColor: 'rgba(8, 28, 22, .48)', flex: 1, justifyContent: 'center', paddingHorizontal: 20 }, dobCalendarCard: { backgroundColor: '#FFFDF7', borderColor: '#DDD7CA', borderRadius: 18, borderWidth: 1, maxWidth: 390, padding: 18, width: '100%' }, dobCalendarTopRow: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' }, dobCalendarEyebrow: { color: '#A77A2F', fontSize: 8, fontWeight: '700', letterSpacing: 1.7 }, dobCalendarTitle: { color: '#17372D', fontFamily: serif, fontSize: 23, marginTop: 3 }, dobCalendarClose: { alignItems: 'center', borderColor: '#D8D5CB', borderRadius: 16, borderWidth: 1, height: 32, justifyContent: 'center', width: 32 }, dobCalendarCloseText: { color: '#385047', fontSize: 24, fontWeight: '300', lineHeight: 26 }, dobCalendarControls: { alignItems: 'center', flexDirection: 'row', marginTop: 20 }, dobCalendarControl: { alignItems: 'center', height: 36, justifyContent: 'center', width: 36 }, dobCalendarControlText: { color: '#15513E', fontSize: 22 }, dobCalendarMonth: { color: '#293D35', flex: 1, fontSize: 14, fontWeight: '700', textAlign: 'center' }, dobCalendarWeek: { flexDirection: 'row', marginTop: 12 }, dobCalendarWeekday: { color: '#8B958F', fontSize: 9, fontWeight: '700', textAlign: 'center', width: '14.2857%' }, dobCalendarGrid: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 6 }, dobCalendarDaySlot: { alignItems: 'center', aspectRatio: 1, justifyContent: 'center', width: '14.2857%' }, dobCalendarDay: { alignItems: 'center', borderRadius: 18, height: 36, justifyContent: 'center', width: 36 }, dobCalendarDaySelected: { backgroundColor: '#15513E' }, dobCalendarDayText: { color: '#34463E', fontSize: 13 }, dobCalendarDayDisabled: { color: '#C8CBC6' }, dobCalendarDayTextSelected: { color: '#FFF', fontWeight: '700' }, dobCalendarCancel: { alignItems: 'center', borderColor: '#B9C6BF', borderRadius: 10, borderWidth: 1, justifyContent: 'center', marginTop: 14, minHeight: 44 }, dobCalendarCancelText: { color: '#15513E', fontSize: 13, fontWeight: '700' },
   choiceRow: { flexDirection: 'row', gap: 9 }, choice: { alignItems: 'center', backgroundColor: '#FFFEFC', borderColor: '#D8D5CB', borderRadius: 10, borderWidth: 1, flex: 1, justifyContent: 'center', minHeight: 48 }, choiceSelected: { backgroundColor: '#10563F', borderColor: '#10563F' }, choiceText: { color: '#1D2923', fontSize: 13, fontWeight: '600' }, choiceTextSelected: { color: '#FFF' }, measureRow: { flexDirection: 'row', gap: 11 }, measureField: { flex: 1 }, privacy: { color: '#89908A', fontSize: 9, lineHeight: 15, textAlign: 'center' },
   welcomeSafe: { backgroundColor: '#104F39', flex: 1 }, confirmationContent: { alignItems: 'center', flex: 1, justifyContent: 'center', paddingBottom: 46, paddingHorizontal: 28 }, successCircle: { alignItems: 'center', borderColor: '#6E8D7F', borderRadius: 38, borderWidth: 1, height: 76, justifyContent: 'center', marginBottom: 26, width: 76 }, successCheck: { color: '#D2A33D', fontSize: 28, fontWeight: '400', lineHeight: 34 }, confirmationTitle: { color: '#FFFDF4', fontFamily: serif, fontSize: 29, fontWeight: '400', textAlign: 'center' }, confirmationCopy: { color: '#D7DFD9', fontSize: 12, lineHeight: 20, marginTop: 14, textAlign: 'center' }, confirmationAction: { bottom: 28, left: 20, position: 'absolute', right: 20 }, homeButton: { alignItems: 'center', backgroundColor: '#FBF8EF', borderRadius: 10, justifyContent: 'center', minHeight: 50 }, homeButtonText: { color: '#0D503B', fontSize: 13, fontWeight: '500' },
-  assessmentSafe: { backgroundColor: '#F7F4EB', flex: 1 }, assessmentIntroPage: { flex: 1, paddingBottom: 25, paddingHorizontal: 21, paddingTop: 17 }, assessmentIntroContent: { flex: 1, justifyContent: 'center', paddingBottom: 8, paddingTop: 70 }, assessmentIntroEyebrow: { color: '#BB8736', fontSize: 8, fontWeight: '500', letterSpacing: 2.1, marginBottom: 10 }, assessmentIntroTitle: { color: '#092E25', fontFamily: serif, fontSize: 29, fontWeight: '400', lineHeight: 35, textAlign: 'left' }, assessmentIntroCopy: { color: '#628078', fontSize: 12, lineHeight: 19, marginTop: 15, textAlign: 'left' }, assessmentFacts: { borderTopColor: '#DCD7CB', borderTopWidth: 1, marginTop: 27 }, assessmentFact: { alignItems: 'center', borderBottomColor: '#DCD7CB', borderBottomWidth: 1, flexDirection: 'row', minHeight: 43 }, factIcon: { alignItems: 'flex-start', justifyContent: 'center', width: 29 }, factIconText: { color: '#6B9A87', fontSize: 8, fontWeight: '500', letterSpacing: .6 }, factTextWrap: { flex: 1 }, factText: { color: '#173A31', fontSize: 12, fontWeight: '500' }, factDetail: { color: '#8A8F8B', fontSize: 11, marginTop: 2 }, assessmentEmblem: { alignItems: 'center', alignSelf: 'center', backgroundColor: '#E9F0E7', borderRadius: 34, height: 68, justifyContent: 'center', marginBottom: 24, width: 68 }, assessmentEmblemText: { color: '#075A3F', fontSize: 36 },
+assessmentSafe: { backgroundColor: '#F7F4EB', flex: 1 }, assessmentIntroPage: { flex: 1, paddingBottom: 25, paddingHorizontal: 21, paddingTop: 17 }, assessmentIntroContent: { paddingHorizontal: 23, paddingTop: 22, paddingBottom: 8 }, assessmentIntroEyebrow: { color: '#BB8736', fontSize: 8, fontWeight: '500', letterSpacing: 2.1, marginBottom: 10 }, assessmentIntroTitle: { color: '#092E25', fontFamily: serif, fontSize: 29, fontWeight: '400', lineHeight: 35, textAlign: 'left' }, assessmentIntroCopy: { color: '#628078', fontSize: 12, lineHeight: 19, marginTop: 15, textAlign: 'left' }, assessmentFacts: { borderTopColor: '#DCD7CB', borderTopWidth: 1, marginTop: 27 }, assessmentFact: { alignItems: 'center', borderBottomColor: '#DCD7CB', borderBottomWidth: 1, flexDirection: 'row', minHeight: 43 }, factIcon: { alignItems: 'flex-start', justifyContent: 'center', width: 29 }, factIconText: { color: '#6B9A87', fontSize: 8, fontWeight: '500', letterSpacing: .6 }, factTextWrap: { flex: 1 }, factText: { color: '#173A31', fontSize: 12, fontWeight: '500' }, factDetail: { color: '#8A8F8B', fontSize: 11, marginTop: 2 }, assessmentEmblem: { alignItems: 'center', alignSelf: 'center', backgroundColor: '#E9F0E7', borderRadius: 34, height: 68, justifyContent: 'center', marginBottom: 24, width: 68 }, assessmentEmblemText: { color: '#075A3F', fontSize: 36 },
   questionPage: { flex: 1, paddingBottom: 24, paddingHorizontal: 18, paddingTop: 14 }, assessmentPageTitle: { color: '#202921', fontFamily: serif, fontSize: 23, fontWeight: '700' }, questionCount: { color: '#6D756F', fontSize: 12, fontWeight: '600', marginTop: 15 }, progressTrack: { backgroundColor: '#E2E3DB', borderRadius: 4, height: 6, marginTop: 8, overflow: 'hidden' }, progressFill: { backgroundColor: '#075A3F', borderRadius: 4, height: '100%' }, questionPrompt: { color: '#26312B', fontFamily: serif, fontSize: 22, fontWeight: '700', lineHeight: 28, marginBottom: 15, marginTop: 18 }, answerList: { flex: 1, gap: 12 }, answerOption: { alignItems: 'center', backgroundColor: '#FFFEFA', borderColor: '#DEDED4', borderRadius: 14, borderWidth: 1, flex: 1, flexDirection: 'row', justifyContent: 'space-between', maxHeight: 165, minHeight: 110, overflow: 'hidden', paddingRight: 12 }, answerOptionSelected: { backgroundColor: '#F3F8F4', borderColor: '#075A3F', borderWidth: 1.5 }, answerImage: { alignSelf: 'stretch', backgroundColor: '#E8EDE7', height: '100%', marginRight: 12, width: 145 }, answerImageContained: { backgroundColor: '#F5F1E8' }, answerTextWrap: { alignItems: 'center', flex: 1, flexDirection: 'row', gap: 7, paddingVertical: 11 }, answerLetter: { color: '#075A3F', fontSize: 12, fontWeight: '800' }, answerLabel: { color: '#38423C', flex: 1, fontSize: 12, fontWeight: '600', lineHeight: 17 }, radio: { alignItems: 'center', borderColor: '#C8CBC5', borderRadius: 10, borderWidth: 1.5, height: 20, justifyContent: 'center', marginLeft: 6, width: 20 }, radioSelected: { borderColor: '#075A3F' }, radioDot: { backgroundColor: '#075A3F', borderRadius: 5, height: 10, width: 10 }, questionActions: { flexDirection: 'row', gap: 12, paddingTop: 14 }, continueHalf: { flex: 1 }, answerHint: { color: '#8A6D2F', fontSize: 11, marginTop: 7, textAlign: 'right' },
   resultPage: { flexGrow: 1, paddingBottom: 30, paddingHorizontal: 25, paddingTop: 40 }, resultEyebrow: { color: '#B08A3D', fontSize: 11, fontWeight: '800', letterSpacing: 1.5, textAlign: 'center' }, resultTitle: { color: '#075A3F', fontFamily: serif, fontSize: 33, fontWeight: '700', marginTop: 8, textAlign: 'center' }, resultDominant: { color: '#34443C', fontSize: 16, fontWeight: '700', marginTop: 7, textAlign: 'center' }, prakritiResultSafe: { backgroundColor: '#124E38', flex: 1 }, prakritiResultScroll: { backgroundColor: '#F7F4EB' }, resultHeader: { alignItems: 'center', backgroundColor: '#124E38', justifyContent: 'center', minHeight: 99, paddingBottom: 20, paddingTop: 14 }, prakritiResultEyebrow: { color: '#A8C5B5', fontSize: 8, fontWeight: '600', letterSpacing: 2.2, textAlign: 'center' }, prakritiResultTitle: { color: '#FFF8E8', fontFamily: serif, fontSize: 27, fontWeight: '400', lineHeight: 33, marginTop: 4, textAlign: 'center' }, prakritiResultPage: { flexGrow: 1, paddingBottom: 28, paddingHorizontal: 21, paddingTop: 19 }, chartRow: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginBottom: 20 }, doshaChart: { height: 112, position: 'relative', width: 112 }, chartSegment: { borderRadius: 2, height: 14, left: 53.5, position: 'absolute', top: 49, width: 5 }, chartCenter: { alignItems: 'center', backgroundColor: '#F7F4EB', borderRadius: 34, height: 68, justifyContent: 'center', left: 22, position: 'absolute', top: 22, width: 68 }, chartCenterLabel: { color: '#71827A', fontSize: 9 }, chartCenterValue: { color: '#102D25', fontFamily: serif, fontSize: 24, fontWeight: '400', lineHeight: 28, marginTop: 1 }, legend: { gap: 6, marginLeft: 17 }, legendItem: { alignItems: 'center', flexDirection: 'row', minWidth: 151 }, legendDot: { borderRadius: 4, height: 7, marginRight: 8, width: 7 }, legendName: { color: '#314B42', flex: 1, fontSize: 11, fontWeight: '500' }, legendValue: { color: '#142B24', fontSize: 11, fontWeight: '600', marginLeft: 20 }, resultMeaning: { backgroundColor: '#FFF', borderColor: '#DDD8CC', borderRadius: 12, borderWidth: 1, marginBottom: 18, paddingHorizontal: 16, paddingVertical: 15 }, resultSectionLabel: { color: '#69887C', fontSize: 8, fontWeight: '600', letterSpacing: 2.1, marginBottom: 10 }, prakritiResultBody: { color: '#234137', fontSize: 11, lineHeight: 18 }, resultDivider: { backgroundColor: '#DCD5C7', height: 1, marginBottom: 12, marginTop: 14 }, tendencyRow: { alignItems: 'flex-start', flexDirection: 'row', marginBottom: 7 }, tendencyDot: { backgroundColor: '#C9902F', borderRadius: 2, height: 4, marginRight: 8, marginTop: 7, width: 4 }, tendency: { color: '#687A73', flex: 1, fontSize: 11, lineHeight: 17 }, resultHomeLink: { alignItems: 'center', justifyContent: 'center', minHeight: 34 }, resultHomeLinkText: { color: '#31735D', fontSize: 11, fontWeight: '500' }, resultSectionTitle: { color: '#29352F', fontFamily: serif, fontSize: 17, fontWeight: '700', marginBottom: 8, marginTop: 7 }, resultBody: { color: '#606963', fontSize: 13, lineHeight: 20, marginBottom: 16 },
   reviewCard: { backgroundColor: '#FFFDF7', borderColor: '#D8D1BF', borderRadius: 17, borderWidth: 1, marginBottom: 22, padding: 19 }, reviewTitle: { color: '#29352F', fontFamily: serif, fontSize: 20, fontWeight: '700', lineHeight: 27, textAlign: 'center' }, starRow: { flexDirection: 'row', justifyContent: 'center', marginBottom: 17, marginTop: 14 }, star: { color: '#D5D0C5', fontSize: 38, marginHorizontal: 3 }, starSelected: { color: '#E5A92F' }, feedbackInput: { backgroundColor: '#FFFFFF', borderColor: '#D8D8CE', borderRadius: 12, borderWidth: 1, color: '#2F3933', fontSize: 14, minHeight: 118, padding: 14, textAlignVertical: 'top', marginBottom: 14 }, reviewThanks: { color: '#075A3F', fontSize: 14, fontWeight: '700', paddingVertical: 10, textAlign: 'center' }, validationFoodPage: { paddingBottom: 42, paddingTop: 30 }, validationFoodSubtitle: { color: '#648074', fontSize: 9, fontWeight: '700', letterSpacing: 1.5, marginTop: 9, textAlign: 'center' }, validationFoodWhyCard: { marginTop: 18 }, validationFoodReviewCard: { marginTop: 22 }, validationYogaPage: { paddingBottom: 42, paddingTop: 30 }, validationYogaSubtitle: { color: '#648074', fontSize: 11, marginTop: 8, textAlign: 'center' }, validationYogaReviewCard: { marginTop: 24 },
@@ -3556,7 +3790,7 @@ const styles = StyleSheet.create({
   planHeading: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' }, viewAll: { color: '#7C837E', fontSize: 13, fontWeight: '600', marginTop: 12 }, planGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 }, planTile: { backgroundColor: '#FFFDF7', borderColor: '#E6E0D3', borderRadius: 15, borderWidth: 1, minHeight: 116, padding: 15, width: '48%' }, planTitleRow: { alignItems: 'center', flexDirection: 'row', gap: 9 }, planIcon: { fontSize: 22 }, planTitle: { color: '#303A34', fontFamily: serif, fontSize: 17, fontWeight: '700' }, planDetail: { color: '#626B65', fontSize: 13, lineHeight: 19, marginTop: 12 },
   shopSafe: { backgroundColor: '#FBF8EF', flex: 1 }, shopPage: { flex: 1, paddingBottom: 24, paddingHorizontal: 20, paddingTop: 30 }, shopHomeScroll: { paddingBottom: 190, paddingHorizontal: 18, paddingTop: 32 }, shopTopRow: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' }, shopBackText: { color: '#26352F', fontSize: 32, lineHeight: 36, width: 36 }, shopTopSpacer: { width: 36 }, shopTitle: { color: '#26312B', fontFamily: serif, fontSize: 27, fontWeight: '700' }, shopSearch: { alignItems: 'center', backgroundColor: '#FFF', borderColor: '#D8DCD5', borderRadius: 24, borderWidth: 1, flexDirection: 'row', marginTop: 22, minHeight: 49, paddingHorizontal: 14 }, shopSearchIcon: { color: '#59635D', fontSize: 22, marginRight: 8 }, shopSearchInput: { color: '#303A34', flex: 1, fontSize: 14, minHeight: 47, paddingVertical: 0 }, deliveryBar: { alignItems: 'center', backgroundColor: '#EEF1EC', borderColor: '#DDE2DC', borderRadius: 13, borderWidth: 1, flexDirection: 'row', marginTop: 13, minHeight: 57, paddingHorizontal: 13 }, deliveryPin: { color: '#075A3F', fontSize: 25, marginRight: 10 }, deliveryCopy: { flex: 1 }, deliveryLabel: { color: '#7B827E', fontSize: 10, fontWeight: '700', textTransform: 'uppercase' }, deliveryAddress: { color: '#303A34', fontSize: 14, fontWeight: '700', marginTop: 2 }, deliveryArrow: { color: '#52605A', fontSize: 25 }, shopSectionTitle: { color: '#303A34', fontFamily: serif, fontSize: 19, fontWeight: '700', marginBottom: 13, marginTop: 25 }, categoryRow: { gap: 16, paddingRight: 12 }, categoryItem: { alignItems: 'center', width: 61 }, categoryIcon: { alignItems: 'center', backgroundColor: '#F6EEDC', borderColor: 'transparent', borderRadius: 11, borderWidth: 1, height: 43, justifyContent: 'center', width: 43 }, categoryIconSelected: { backgroundColor: '#E5EFE7', borderColor: '#72A083' }, categoryEmoji: { fontSize: 20 }, categoryLabel: { color: '#646D67', fontSize: 9, fontWeight: '600', lineHeight: 12, marginTop: 5, textAlign: 'center' }, categoryLabelSelected: { color: '#075A3F', fontWeight: '800' }, horizontalProducts: { gap: 12, paddingRight: 18 }, productGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 }, productCard: { backgroundColor: '#FFFDF8', borderColor: '#E6E1D6', borderRadius: 16, borderWidth: 1, padding: 13, width: '48%' }, horizontalProductCard: { width: 168 }, productVisual: { alignItems: 'center', alignSelf: 'center', backgroundColor: '#E9EFE5', borderColor: '#CAD8C6', borderRadius: 15, borderWidth: 1, height: 125, justifyContent: 'center', marginBottom: 13, position: 'relative', width: 125 }, productVisualSmall: { borderRadius: 10, height: 64, marginBottom: 0, marginRight: 12, width: 64 }, productVisualIcon: { fontSize: 58 }, productVisualIconSmall: { fontSize: 31 }, productBottleLabel: { backgroundColor: '#FFFDF4', borderColor: '#B5C5B0', borderRadius: 3, borderWidth: 1, bottom: 13, paddingHorizontal: 6, paddingVertical: 2, position: 'absolute' }, productBottleText: { color: '#356247', fontSize: 7, fontWeight: '900', letterSpacing: .7 }, productName: { color: '#2D3731', fontFamily: serif, fontSize: 16, fontWeight: '700' }, productWeight: { color: '#7A817D', fontSize: 11, marginTop: 4 }, productPrice: { color: '#075A3F', fontSize: 16, fontWeight: '800', marginTop: 10 }, quickAdd: { alignItems: 'center', borderColor: '#075A3F', borderRadius: 8, borderWidth: 1, marginTop: 11, paddingVertical: 7 }, quickAddText: { color: '#075A3F', fontSize: 12, fontWeight: '800' }, inlineQuantity: { alignItems: 'center', backgroundColor: '#075A3F', borderRadius: 8, flexDirection: 'row', justifyContent: 'space-between', marginTop: 11, minHeight: 32, paddingHorizontal: 6 }, inlineQuantityLarge: { borderRadius: 11, minHeight: 51, paddingHorizontal: 12 }, inlineQuantityButton: { alignItems: 'center', height: 28, justifyContent: 'center', width: 28 }, inlineQuantityButtonLarge: { height: 44, width: 44 }, inlineQuantityButtonText: { color: '#FFF', fontSize: 21, fontWeight: '800' }, inlineQuantityValue: { color: '#FFF', fontSize: 13, fontWeight: '900' }, inlineQuantityValueLarge: { fontSize: 17 }, noProducts: { color: '#737B76', fontSize: 13, paddingVertical: 24, textAlign: 'center' }, floatingCart: { alignItems: 'center', backgroundColor: '#075A3F', borderRadius: 30, bottom: 24, elevation: 7, height: 60, justifyContent: 'center', position: 'absolute', right: 22, shadowColor: '#002E21', shadowOffset: { width: 0, height: 5 }, shadowOpacity: .24, shadowRadius: 9, width: 60 }, floatingCartAboveNav: { bottom: 101 }, floatingCartIcon: { fontSize: 27 }, cartBadge: { alignItems: 'center', backgroundColor: '#DCA83C', borderColor: '#FFF', borderRadius: 10, borderWidth: 1.5, height: 21, justifyContent: 'center', position: 'absolute', right: -2, top: -3, minWidth: 21 }, cartBadgeText: { color: '#FFF', fontSize: 10, fontWeight: '900' }, productDetailPage: { flexGrow: 1, paddingBottom: 105, paddingHorizontal: 22, paddingTop: 30 }, productDetailHero: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginTop: 26 }, productDetailCopy: { flex: 1, paddingRight: 12 }, productDetailName: { color: '#26312B', fontFamily: serif, fontSize: 25, fontWeight: '700' }, productDetailPrice: { color: '#26312B', fontSize: 27, fontWeight: '800', marginTop: 17 }, productMrp: { color: '#CE5252', fontSize: 12, fontWeight: '700', marginTop: 5, textDecorationLine: 'line-through' }, ratingLine: { alignItems: 'center', flexDirection: 'row', gap: 5, marginTop: 16 }, productDescription: { color: '#5E6862', fontSize: 14, lineHeight: 22, marginTop: 25 }, productAction: { marginTop: 'auto', paddingTop: 40 }, cartList: { gap: 13, paddingBottom: 20, paddingTop: 24 }, cartItem: { alignItems: 'center', backgroundColor: '#FFFDF8', borderColor: '#E6E1D6', borderRadius: 15, borderWidth: 1, flexDirection: 'row', padding: 12 }, cartItemInfo: { flex: 1 }, cartItemName: { color: '#2E3832', fontFamily: serif, fontSize: 16, fontWeight: '700' }, cartItemPrice: { color: '#075A3F', fontSize: 14, fontWeight: '800', marginTop: 7 }, quantityControl: { alignItems: 'center', flexDirection: 'row', gap: 9 }, quantityButton: { alignItems: 'center', backgroundColor: '#EDF3EC', borderColor: '#CFDCCF', borderRadius: 14, borderWidth: 1, height: 29, justifyContent: 'center', width: 29 }, quantityButtonText: { color: '#075A3F', fontSize: 19, fontWeight: '700', lineHeight: 21 }, quantityValue: { color: '#303A34', fontSize: 14, fontWeight: '800', minWidth: 18, textAlign: 'center' }, cartFooter: { borderTopColor: '#E4E0D7', borderTopWidth: 1, paddingTop: 18 }, cartTotalRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 17 }, cartTotalLabel: { color: '#505A54', fontSize: 16, fontWeight: '700' }, cartTotalValue: { color: '#26312B', fontSize: 19, fontWeight: '800' }, emptyCart: { flex: 1, gap: 10, justifyContent: 'center' }, emptyCartIcon: { fontSize: 55, textAlign: 'center' }, emptyCartTitle: { color: '#26312B', fontFamily: serif, fontSize: 24, fontWeight: '700', textAlign: 'center' }, emptyCartCopy: { color: '#737B76', fontSize: 14, marginBottom: 22, textAlign: 'center' }, orderSuccessPage: { alignItems: 'center', backgroundColor: '#FBF8EF', flex: 1, justifyContent: 'center', paddingHorizontal: 30, paddingTop: 24 }, orderSuccessCheck: { alignItems: 'center', backgroundColor: '#4FAA5B', borderRadius: 42, height: 84, justifyContent: 'center', marginBottom: 27, width: 84 }, orderSuccessCheckText: { color: '#FFF', fontSize: 45, fontWeight: '800' }, orderSuccessTitle: { color: '#26312B', fontFamily: serif, fontSize: 28, fontWeight: '700', lineHeight: 36, textAlign: 'center' }, orderSuccessCopy: { color: '#67716B', fontSize: 14, lineHeight: 22, marginTop: 17, maxWidth: 310, textAlign: 'center' }, orderSuccessTap: { color: '#075A3F', fontSize: 12, fontWeight: '700', marginTop: 42 },
   appointmentCard: { alignItems: 'center', backgroundColor: '#EFF6F0', borderColor: '#CFE0D3', borderRadius: 18, borderWidth: 1, flexDirection: 'row', marginTop: 17, padding: 15 }, appointmentPortrait: { alignItems: 'center', backgroundColor: '#D9EADB', borderColor: '#B9D2BE', borderRadius: 34, borderWidth: 1, height: 68, justifyContent: 'center', marginRight: 14, overflow: 'hidden', width: 68 }, appointmentPortraitIcon: { fontSize: 39 }, appointmentHomeContent: { flex: 1 }, appointmentEyebrow: { color: '#3C795A', fontSize: 9, fontWeight: '800', letterSpacing: 1.1, marginBottom: 6 }, appointmentHomeText: { color: '#2D3A33', fontSize: 14, fontWeight: '600', lineHeight: 21 },
-  doctorSafe: { backgroundColor: '#F7F4EB', flex: 1 }, doctorLandingSafe: { backgroundColor: '#F8F5EC', flex: 1 }, doctorLandingPage: { flex: 1, paddingHorizontal: 28 }, doctorLandingContent: { flex: 1, justifyContent: 'flex-end', paddingBottom: 24 }, doctorLandingEyebrow: { color: '#C58C2D', fontSize: 8, fontWeight: '700', letterSpacing: 2.1, marginBottom: 11 }, doctorLandingTitle: { color: '#17372E', fontFamily: serif, fontSize: 29, lineHeight: 36 }, doctorLandingBody: { color: '#75847D', fontSize: 11, lineHeight: 18, marginTop: 12 }, doctorLandingPrimary: { alignItems: 'center', backgroundColor: '#164D39', borderRadius: 9, justifyContent: 'center', marginTop: 24, minHeight: 47 }, doctorLandingPrimaryText: { color: '#FFF', fontSize: 11, fontWeight: '700' }, doctorLandingSecondary: { alignItems: 'center', backgroundColor: '#FFF', borderColor: '#DED9CE', borderRadius: 9, borderWidth: 1, flexDirection: 'row', justifyContent: 'center', marginTop: 9, minHeight: 44 }, doctorLandingSecondaryText: { color: '#294138', fontSize: 11, fontWeight: '600' }, doctorLandingAppointmentCount: { color: '#8D9993', fontSize: 8, letterSpacing: 1, marginLeft: 8 }, doctorLandingSafety: { color: '#8D9993', fontSize: 9, lineHeight: 15, marginTop: 16, paddingHorizontal: 6, textAlign: 'center' }, doctorListPage: { flexGrow: 1, paddingBottom: 116, paddingHorizontal: 21, paddingTop: 17 }, doctorTitle: { color: '#092F25', fontFamily: serif, fontSize: 29, fontWeight: '400', lineHeight: 36, marginTop: 8 }, doctorSubtitle: { color: '#668078', fontSize: 12, lineHeight: 19, marginBottom: 18, marginTop: 3 }, doctorFilterRow: { flexDirection: 'row', gap: 7, marginBottom: 14 }, doctorFilter: { alignItems: 'center', backgroundColor: '#FFF', borderColor: '#DCD7CC', borderRadius: 14, borderWidth: 1, justifyContent: 'center', minHeight: 26, paddingHorizontal: 14 }, doctorFilterSelected: { backgroundColor: '#124E38', borderColor: '#124E38' }, doctorFilterText: { color: '#214037', fontSize: 10, fontWeight: '500' }, doctorFilterTextSelected: { color: '#FFF' }, doctorCards: { gap: 10, marginBottom: 14 }, doctorCard: { alignItems: 'center', backgroundColor: '#FFF', borderColor: '#DDD8CC', borderRadius: 12, borderWidth: 1, flexDirection: 'row', minHeight: 97, paddingHorizontal: 12, paddingVertical: 11 }, doctorAvatar: { alignItems: 'center', backgroundColor: '#E9F1EA', borderRadius: 23, height: 46, justifyContent: 'center', marginRight: 12, overflow: 'hidden', width: 46 }, doctorPortrait: { height: '100%', width: '100%' }, doctorInfo: { flex: 1 }, doctorListName: { color: '#16392F', fontFamily: serif, fontSize: 16, fontWeight: '400', marginBottom: 2 }, doctorName: { color: '#26312B', fontFamily: serif, fontSize: 17, fontWeight: '700', marginBottom: 5 }, doctorMeta: { color: '#668078', fontSize: 10, lineHeight: 16 }, doctorPrice: { color: '#102F27', fontSize: 12, fontWeight: '700', marginTop: 3 }, doctorListRating: { alignItems: 'flex-end', alignSelf: 'flex-start', marginLeft: 6 }, doctorListRatingText: { color: '#16362D', fontSize: 10, fontWeight: '700' }, doctorListRatingStar: { color: '#C58C2D' }, doctorAvailability: { color: '#83A092', fontSize: 7, letterSpacing: 1.2, marginTop: 2 }, ratingStar: { color: '#D69E22', fontSize: 15 }, ratingText: { color: '#505954', fontSize: 12, fontWeight: '700' },
+  doctorSafe: { backgroundColor: '#F7F4EB', flex: 1 }, doctorLandingSafe: { backgroundColor: '#F8F5EC', flex: 1 }, doctorLandingPage: { flex: 1, paddingHorizontal: 28 }, doctorLandingContent: { paddingHorizontal: 23, paddingTop: 20, paddingBottom: 24 }, doctorLandingEyebrow: { color: '#C58C2D', fontSize: 8, fontWeight: '700', letterSpacing: 2.1, marginBottom: 11 }, doctorLandingTitle: { color: '#17372E', fontFamily: serif, fontSize: 29, lineHeight: 36 }, doctorLandingBody: { color: '#75847D', fontSize: 13, lineHeight: 21, marginTop: 14 }, doctorLandingPrimary: { alignItems: 'center', backgroundColor: '#164D39', borderRadius: 9, justifyContent: 'center', marginTop: 28, minHeight: 50 }, doctorLandingPrimaryText: { color: '#FFF', fontSize: 13, fontWeight: '700' }, doctorLandingSecondary: { alignItems: 'center', backgroundColor: '#FFF', borderColor: '#DED9CE', borderRadius: 9, borderWidth: 1, flexDirection: 'row', justifyContent: 'center', marginTop: 9, minHeight: 50 }, doctorLandingSecondaryText: { color: '#294138', fontSize: 13, fontWeight: '600' }, doctorLandingAppointmentCount: { color: '#8D9993', fontSize: 8, letterSpacing: 1, marginLeft: 8 }, doctorLandingSafety: { color: '#8D9993', fontSize: 11, lineHeight: 18, marginTop: 16, paddingHorizontal: 6, textAlign: 'center' }, doctorListPage: { flexGrow: 1, paddingBottom: 116, paddingHorizontal: 21, paddingTop: 17 }, doctorTitle: { color: '#092F25', fontFamily: serif, fontSize: 29, fontWeight: '400', lineHeight: 36, marginTop: 8 }, doctorSubtitle: { color: '#668078', fontSize: 12, lineHeight: 19, marginBottom: 18, marginTop: 3 }, doctorFilterRow: { flexDirection: 'row', gap: 7, marginBottom: 14 }, doctorFilter: { alignItems: 'center', backgroundColor: '#FFF', borderColor: '#DCD7CC', borderRadius: 14, borderWidth: 1, justifyContent: 'center', minHeight: 26, paddingHorizontal: 14 }, doctorFilterSelected: { backgroundColor: '#124E38', borderColor: '#124E38' }, doctorFilterText: { color: '#214037', fontSize: 10, fontWeight: '500' }, doctorFilterTextSelected: { color: '#FFF' }, doctorCards: { gap: 10, marginBottom: 14 }, doctorCard: { alignItems: 'center', backgroundColor: '#FFF', borderColor: '#DDD8CC', borderRadius: 12, borderWidth: 1, flexDirection: 'row', minHeight: 97, paddingHorizontal: 12, paddingVertical: 11 }, doctorAvatar: { alignItems: 'center', backgroundColor: '#E9F1EA', borderRadius: 23, height: 46, justifyContent: 'center', marginRight: 12, overflow: 'hidden', width: 46 }, doctorPortrait: { height: '100%', width: '100%' }, doctorInfo: { flex: 1 }, doctorListName: { color: '#16392F', fontFamily: serif, fontSize: 16, fontWeight: '400', marginBottom: 2 }, doctorName: { color: '#26312B', fontFamily: serif, fontSize: 17, fontWeight: '700', marginBottom: 5 }, doctorMeta: { color: '#668078', fontSize: 10, lineHeight: 16 }, doctorPrice: { color: '#102F27', fontSize: 12, fontWeight: '700', marginTop: 3 }, doctorListRating: { alignItems: 'flex-end', alignSelf: 'flex-start', marginLeft: 6 }, doctorListRatingText: { color: '#16362D', fontSize: 10, fontWeight: '700' }, doctorListRatingStar: { color: '#C58C2D' }, doctorAvailability: { color: '#83A092', fontSize: 7, letterSpacing: 1.2, marginTop: 2 }, ratingStar: { color: '#D69E22', fontSize: 15 }, ratingText: { color: '#505954', fontSize: 12, fontWeight: '700' },
   doctorProfileSafe: { backgroundColor: '#124E38', flex: 1, marginTop: Platform.OS === 'android' ? -(NativeStatusBar.currentHeight ?? 0) : 0, paddingTop: Platform.OS === 'android' ? NativeStatusBar.currentHeight ?? 0 : 0 }, doctorProfileScroll: { backgroundColor: '#F7F4EB' }, doctorProfilePage: { flexGrow: 1, paddingBottom: 104 }, doctorProfileHero: { backgroundColor: '#124E38', paddingBottom: 20, paddingHorizontal: 21, paddingTop: 16 }, doctorHeroBack: { alignItems: 'center', borderColor: '#5C7E70', borderRadius: 16, borderWidth: 1, height: 32, justifyContent: 'center', width: 32 }, doctorHeroBackText: { color: '#FFF', fontSize: 25, fontWeight: '300', lineHeight: 27 }, doctorHeroIdentity: { alignItems: 'center', flexDirection: 'row', marginTop: 14 }, doctorHeroAvatar: { backgroundColor: '#335F50', borderColor: '#6D8A7E', borderRadius: 28, borderWidth: 1, height: 56, marginRight: 13, overflow: 'hidden', width: 56 }, doctorHeroCopy: { flex: 1 }, doctorHeroName: { color: '#FFF9E8', fontFamily: serif, fontSize: 20, fontWeight: '400' }, doctorHeroMeta: { color: '#BDD2C7', fontSize: 10, marginTop: 5 }, doctorStats: { backgroundColor: '#F7F4EB', borderBottomColor: '#DED9CD', borderBottomWidth: 1, flexDirection: 'row' }, doctorStat: { alignItems: 'center', borderRightColor: '#DED9CD', borderRightWidth: 1, flex: 1, justifyContent: 'center', minHeight: 54 }, doctorStatLast: { borderRightWidth: 0 }, doctorStatValue: { color: '#14372E', fontFamily: serif, fontSize: 15, fontWeight: '600' }, doctorStatLabel: { color: '#8B9B94', fontSize: 7, letterSpacing: 1.4, marginTop: 2 }, doctorProfileBody: { paddingHorizontal: 21, paddingTop: 17 }, doctorLabel: { color: '#799187', fontSize: 8, fontWeight: '600', letterSpacing: 2, marginBottom: 8, marginTop: 1 }, doctorAbout: { color: '#18382F', fontSize: 12, lineHeight: 19, marginBottom: 17 }, focusAreaRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 17 }, focusAreaPill: { backgroundColor: '#E8F1EB', borderRadius: 13, paddingHorizontal: 12, paddingVertical: 6 }, focusAreaText: { color: '#1A5A45', fontSize: 9 }, consultationCard: { alignItems: 'center', backgroundColor: '#FFF', borderColor: '#DDD8CC', borderRadius: 12, borderWidth: 1, flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 14, paddingVertical: 13 }, consultationLabel: { color: '#789086', fontSize: 7, letterSpacing: 1.7 }, consultationFee: { color: '#124E38', fontFamily: serif, fontSize: 20, marginTop: 2 }, consultationDuration: { alignItems: 'flex-end' }, consultationDurationText: { color: '#183A30', fontSize: 12, marginTop: 3 }, doctorProfileFooter: { backgroundColor: '#F7F4EB', borderTopColor: '#DED9CD', borderTopWidth: 1, bottom: 0, left: 0, paddingHorizontal: 21, paddingVertical: 12, position: 'absolute', right: 0 }, doctorBottomNav: { height: 70, paddingBottom: 8, paddingTop: 5 },
   schedulerPage: { flexGrow: 1, paddingBottom: 104, paddingHorizontal: 21, paddingTop: 17 }, schedulerDoctor: { color: '#668078', fontSize: 11, marginBottom: 24, marginTop: 2 }, calendarCard: { backgroundColor: '#FFF', borderColor: '#DDD8CC', borderRadius: 12, borderWidth: 1, marginBottom: 18, paddingHorizontal: 13, paddingVertical: 10 }, monthRow: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6, paddingHorizontal: 3 }, monthTitle: { color: '#17372F', fontSize: 11, fontWeight: '600' }, monthArrow: { color: '#5E786D', fontSize: 21, padding: 4 }, calendarGrid: { flexDirection: 'row', flexWrap: 'wrap' }, weekday: { color: '#8A9C95', fontSize: 7, fontWeight: '500', letterSpacing: .6, marginBottom: 3, textAlign: 'center', width: '14.285%' }, calendarDay: { alignItems: 'center', height: 34, justifyContent: 'center', width: '14.285%' }, calendarDaySelected: { alignSelf: 'center', backgroundColor: '#124E38', borderRadius: 9 }, calendarDayText: { color: '#18382F', fontSize: 10 }, calendarDayTextSelected: { color: '#FFF', fontWeight: '800' }, slotsHeading: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' }, slotsDate: { color: '#27463C', fontSize: 10, marginBottom: 8 }, slotGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 7, marginBottom: 17 }, slot: { alignItems: 'center', backgroundColor: '#FFF', borderColor: '#DDD8CC', borderRadius: 9, borderWidth: 1, justifyContent: 'center', minHeight: 39, width: '31.7%' }, slotSelected: { backgroundColor: '#EAF3EC', borderColor: '#124E38' }, slotDisabled: { backgroundColor: '#F8F5EE' }, slotText: { color: '#29473E', fontSize: 10, fontWeight: '500' }, slotTextSelected: { color: '#124E38', fontWeight: '700' }, slotTextDisabled: { color: '#C8C5BD', textDecorationLine: 'line-through' }, consultationTypeRow: { flexDirection: 'row', gap: 8 }, consultationTypeCard: { backgroundColor: '#FFF', borderColor: '#DDD8CC', borderRadius: 10, borderWidth: 1, flex: 1, minHeight: 55, paddingHorizontal: 12, paddingVertical: 9 }, consultationTypeSelected: { backgroundColor: '#EAF3EC', borderColor: '#124E38' }, consultationTypeTitle: { color: '#173A30', fontSize: 11, fontWeight: '600' }, consultationTypeCopy: { color: '#85968F', fontSize: 8, marginTop: 4 }, schedulerFooter: { backgroundColor: '#F7F4EB', borderTopColor: '#DED9CD', borderTopWidth: 1, bottom: 0, left: 0, paddingHorizontal: 21, paddingVertical: 12, position: 'absolute', right: 0 },
   confirmedSafe: { backgroundColor: '#124E38', flex: 1, marginTop: Platform.OS === 'android' ? -(NativeStatusBar.currentHeight ?? 0) : 0, paddingTop: Platform.OS === 'android' ? NativeStatusBar.currentHeight ?? 0 : 0 }, confirmedDecor: { backgroundColor: '#315F48', borderRadius: 92, height: 184, opacity: .42, position: 'absolute', right: -68, top: 50, width: 184 }, confirmedPage: { alignItems: 'center', flex: 1, paddingHorizontal: 21, paddingTop: 74 }, appointmentCheck: { alignItems: 'center', borderColor: '#719080', borderRadius: 31, borderWidth: 1, height: 62, justifyContent: 'center', marginBottom: 20, width: 62 }, appointmentCheckText: { color: '#D6A130', fontSize: 25, fontWeight: '400' }, confirmedTitle: { color: '#FFF8E8', fontFamily: serif, fontSize: 27, fontWeight: '400', textAlign: 'center' }, confirmedNote: { color: '#BFD2C8', fontSize: 11, lineHeight: 18, marginTop: 9, textAlign: 'center' }, confirmedSummary: { alignSelf: 'stretch', borderColor: '#4E7565', borderRadius: 10, borderWidth: 1, marginTop: 27, overflow: 'hidden' }, confirmedRow: { alignItems: 'center', borderBottomColor: '#416B59', borderBottomWidth: 1, flexDirection: 'row', justifyContent: 'space-between', minHeight: 39, paddingHorizontal: 13 }, confirmedRowLast: { borderBottomWidth: 0 }, confirmedLabel: { color: '#8FB1A2', fontSize: 7, letterSpacing: 1.5 }, confirmedValue: { color: '#FFF', fontSize: 10, fontWeight: '600' }, confirmedActions: { bottom: 17, left: 21, position: 'absolute', right: 21 }, confirmedPrimary: { alignItems: 'center', backgroundColor: '#FBF8EF', borderRadius: 10, justifyContent: 'center', minHeight: 47 }, confirmedPrimaryText: { color: '#124E38', fontSize: 12, fontWeight: '600' }, confirmedHome: { alignItems: 'center', minHeight: 35, paddingTop: 10 }, confirmedHomeText: { color: '#BCD0C6', fontSize: 11 },
