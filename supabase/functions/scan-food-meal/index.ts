@@ -1,9 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { consumeRateLimit, corsHeadersFor, publicError } from "../_shared/security.ts";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-};
 
 type RecognisedItem = {
   name: string;
@@ -81,6 +78,7 @@ const responseFormat = {
 };
 
 Deno.serve(async (request) => {
+  const corsHeaders = corsHeadersFor(request);
   if (request.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   try {
     const authorization = request.headers.get("Authorization");
@@ -98,6 +96,10 @@ Deno.serve(async (request) => {
 
     const userResponse = await fetch(`${supabaseUrl}/auth/v1/user`, { headers: { Authorization: authorization, apikey: anonKey } });
     if (!userResponse.ok) return Response.json({ error: "Invalid session" }, { status: 401, headers: corsHeaders });
+    const user = await userResponse.json();
+    if (!user?.id) return Response.json({ error: "Invalid session" }, { status: 401, headers: corsHeaders });
+    const quota = await consumeRateLimit(supabaseUrl, anonKey, authorization, "scan-food-meal", 20, 86400);
+    if (!quota.allowed) return publicError(corsHeaders, quota.unavailable ? "The service is temporarily unavailable." : "Daily meal-scan limit reached.", quota.unavailable ? 503 : 429);
 
     const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
@@ -120,6 +122,6 @@ Deno.serve(async (request) => {
     return Response.json({ items: parsed.items.map((item) => ({ name: cleanText(item.name, 120), serving_label: cleanText(item.serving_label, 80), calories: Math.round(item.calories), protein: Math.round(item.protein), fat: Math.round(item.fat), confidence: item.confidence })) }, { headers: corsHeaders });
   } catch (error) {
     console.error("Meal recognition failed", error instanceof Error ? error.message : "Unexpected error");
-    return Response.json({ error: error instanceof Error ? error.message : "Unexpected error" }, { status: 500, headers: corsHeaders });
+    return publicError(corsHeaders, "Meal recognition is temporarily unavailable.");
   }
 });

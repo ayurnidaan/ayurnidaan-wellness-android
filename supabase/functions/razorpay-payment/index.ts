@@ -1,8 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { consumeRateLimit, corsHeadersFor, publicError } from "../_shared/security.ts";
 
-const corsHeaders = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type", "Access-Control-Allow-Methods": "GET, POST, OPTIONS" };
 const doctorFees: Record<string, number> = { "Dr Anita Deshmukh": 800, "Dr Nikhil Khatana": 600, "Dr Lalit Madawat": 700, "Dr Nirmal Kumavat": 500, "Dr Ravi Menon": 900, "Dr Sunita Rao": 650 };
-const json = (body: unknown, status = 200) => Response.json(body, { status, headers: corsHeaders });
 const safeRedirect = (value: unknown) => typeof value === "string" && /^(ayurnidaan(?:-dev)?:\/\/payment-callback|exp:\/\/[^\s]+|https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?\/|https:\/\/(?:dist-fawn-zeta-72|dist-vikriti)\.vercel\.app\/)/i.test(value) ? value : null;
 const restHeaders = (serviceKey: string, prefer?: string) => ({ Authorization: `Bearer ${serviceKey}`, apikey: serviceKey, "Content-Type": "application/json", ...(prefer ? { Prefer: prefer } : {}) });
 
@@ -33,37 +32,35 @@ async function serviceUpdate(url: string, body: unknown, serviceKey: string) {
   return response.json();
 }
 
-async function hmacHex(value: string, secret: string) {
-  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value));
-  return [...new Uint8Array(signature)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+async function serviceRpc(supabaseUrl: string, functionName: string, body: unknown, serviceKey: string) {
+  const response = await fetch(`${supabaseUrl}/rest/v1/rpc/${functionName}`, {
+    method: "POST",
+    headers: restHeaders(serviceKey),
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    console.error("Payment fulfilment RPC failed", response.status, (await response.text()).slice(0, 300));
+    throw new Error("Could not complete the paid order");
+  }
+  return response.json();
+}
+
+async function verifyHmac(value: string, signatureHex: string, secret: string) {
+  if (!/^[0-9a-f]{64}$/i.test(signatureHex)) return false;
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
+  const signature = Uint8Array.from(signatureHex.match(/.{2}/g) ?? [], (byte) => Number.parseInt(byte, 16));
+  return crypto.subtle.verify("HMAC", key, signature, new TextEncoder().encode(value));
 }
 
 async function verifyAndFulfil(transaction: Record<string, any>, paymentId: string, returnedOrderId: string, signature: string, keyId: string, keySecret: string, supabaseUrl: string, serviceKey: string) {
   if (transaction.status === "paid" && transaction.resource_id) return transaction.resource_id as string;
-  const expected = await hmacHex(`${transaction.razorpay_order_id}|${paymentId}`, keySecret);
-  if (!paymentId || returnedOrderId !== transaction.razorpay_order_id || signature !== expected) {
-    await serviceUpdate(`${supabaseUrl}/rest/v1/payment_transactions?id=eq.${transaction.id}`, { status: "failed", error_message: "Signature verification failed", updated_at: new Date().toISOString() }, serviceKey);
-    throw new Error("Payment verification failed");
-  }
+  if (!paymentId || returnedOrderId !== transaction.razorpay_order_id || !(await verifyHmac(`${transaction.razorpay_order_id}|${paymentId}`, signature, keySecret))) throw new Error("Payment verification failed");
   const paymentResponse = await fetch(`https://api.razorpay.com/v1/payments/${encodeURIComponent(paymentId)}`, { headers: { Authorization: `Basic ${btoa(`${keyId}:${keySecret}`)}` } });
   const payment = paymentResponse.ok ? await paymentResponse.json() : null;
   if (!payment || payment.order_id !== transaction.razorpay_order_id || payment.status !== "captured") throw new Error("Payment has not been captured");
-  const resourceId = await fulfil(transaction, supabaseUrl, serviceKey);
-  await serviceUpdate(`${supabaseUrl}/rest/v1/payment_transactions?id=eq.${transaction.id}`, { status: "paid", razorpay_payment_id: paymentId, resource_id: resourceId, paid_at: new Date().toISOString(), updated_at: new Date().toISOString() }, serviceKey);
+  const resourceId = await serviceRpc(supabaseUrl, "fulfil_verified_payment", { p_transaction_id: transaction.id, p_razorpay_payment_id: paymentId }, serviceKey);
+  if (typeof resourceId !== "string") throw new Error("Could not complete the paid order");
   return resourceId;
-}
-
-async function fulfil(transaction: Record<string, any>, supabaseUrl: string, serviceKey: string) {
-  if (transaction.resource_id) return transaction.resource_id as string;
-  const payload = transaction.payload as Record<string, any>;
-  if (transaction.purpose === "appointment") {
-    const [appointment] = await serviceInsert(`${supabaseUrl}/rest/v1/appointments`, { user_id: transaction.user_id, doctor_name: payload.doctor_name, doctor_initials: payload.doctor_initials, appointment_date: payload.appointment_date, appointment_time: payload.appointment_time, consultation_type: payload.consultation_type, patient_notes: payload.patient_notes || null, symptom_tags: payload.symptom_tags || [], attachments: payload.attachments || [] }, serviceKey);
-    return appointment.id as string;
-  }
-  const [order] = await serviceInsert(`${supabaseUrl}/rest/v1/shop_orders`, { user_id: transaction.user_id, total_amount: transaction.amount_paise / 100, delivery_postcode: payload.address.postcode, delivery_address_id: payload.address.id, delivery_address_label: payload.address.label, delivery_address_snapshot: `${payload.address.recipient_name}\n${payload.address.address_line}\n${payload.address.city}, ${payload.address.state} ${payload.address.postcode}` }, serviceKey);
-  await serviceInsert(`${supabaseUrl}/rest/v1/shop_order_items`, payload.items.map((item: Record<string, any>) => ({ order_id: order.id, user_id: transaction.user_id, product_id: item.product_id, quantity: item.quantity, unit_price: item.unit_price })), serviceKey);
-  return order.id as string;
 }
 
 function checkoutConfig(transaction: Record<string, any>, keyId: string, functionUrl: string) {
@@ -74,6 +71,8 @@ function checkoutConfig(transaction: Record<string, any>, keyId: string, functio
 }
 
 Deno.serve(async (request) => {
+  const corsHeaders = corsHeadersFor(request);
+  const json = (body: unknown, status = 200) => Response.json(body, { status, headers: corsHeaders });
   if (request.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   const url = new URL(request.url);
   try {
@@ -95,7 +94,7 @@ Deno.serve(async (request) => {
       if (!transaction) return new Response("Payment session not found", { status: 404 });
       let resourceId = "";
       try { resourceId = await verifyAndFulfil(transaction, paymentId, returnedOrderId, signature, keyId, keySecret, supabaseUrl, serviceKey); }
-      catch (verificationError) { return new Response(verificationError instanceof Error ? verificationError.message : "Payment verification failed", { status: verificationError instanceof Error && verificationError.message === "Payment has not been captured" ? 409 : 400 }); }
+      catch (verificationError) { return new Response(verificationError instanceof Error && verificationError.message === "Payment has not been captured" ? "Payment has not been captured" : "Payment verification failed", { status: verificationError instanceof Error && verificationError.message === "Payment has not been captured" ? 409 : 400 }); }
       const redirect = `${transaction.redirect_url}${transaction.redirect_url.includes("?") ? "&" : "?"}status=success&payment_ref=${transaction.id}`;
       return new Response(null, { status: 303, headers: { Location: redirect, "Cache-Control": "no-store" } });
     }
@@ -109,6 +108,9 @@ Deno.serve(async (request) => {
       return json(checkoutConfig(transaction, keyId, functionUrl));
     }
     const user = await authenticatedUser(request, supabaseUrl, anonKey); if (!user) return json({ error: "Authentication required" }, 401);
+    const authorization = request.headers.get("Authorization")!;
+    const quota = await consumeRateLimit(supabaseUrl, anonKey, authorization, "razorpay-payment", 30, 3600);
+    if (!quota.allowed) return publicError(corsHeaders, quota.unavailable ? "The payment service is temporarily unavailable." : "Payment request limit reached. Please try again later.", quota.unavailable ? 503 : 429);
     if (body.action === "verify_native") {
       const [transaction] = await serviceQuery(`${supabaseUrl}/rest/v1/payment_transactions?select=*&id=eq.${encodeURIComponent(String(body.payment_ref || ""))}&user_id=eq.${user.id}&limit=1`, serviceKey);
       if (!transaction) return json({ error: "Payment not found" }, 404);
@@ -130,12 +132,18 @@ Deno.serve(async (request) => {
     let amountRupees = 0; let payload: Record<string, any> = {};
     if (purpose === "appointment") {
       const input = body.appointment || {}; amountRupees = doctorFees[input.doctor_name] || 0;
-      if (!amountRupees || !/^\d{4}-\d{2}-\d{2}$/.test(input.appointment_date || "") || typeof input.appointment_time !== "string" || !["Video Consultation", "Audio Consultation"].includes(input.consultation_type)) return json({ error: "Invalid appointment details" }, 400);
-      payload = { doctor_name: input.doctor_name, doctor_initials: String(input.doctor_initials || "").slice(0, 4), appointment_date: input.appointment_date, appointment_time: input.appointment_time.slice(0, 20), consultation_type: input.consultation_type, patient_notes: typeof input.patient_notes === "string" ? input.patient_notes.slice(0, 600) : null, symptom_tags: Array.isArray(input.symptom_tags) ? input.symptom_tags.slice(0, 10) : [], attachments: Array.isArray(input.attachments) ? input.attachments.slice(0, 10) : [] };
+      const appointmentDate = typeof input.appointment_date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(input.appointment_date) ? input.appointment_date : "";
+      const today = new Date().toISOString().slice(0, 10);
+      const attachments = Array.isArray(input.attachments) ? input.attachments.slice(0, 10).flatMap((item: Record<string, unknown>) => {
+        const storagePath = typeof item?.storage_path === "string" ? item.storage_path : "";
+        return storagePath.startsWith(`${user.id}/`) ? [{ name: String(item.name || "").slice(0, 160), size: Number(item.size) || null, storage_path: storagePath, type: item.type === "photo" ? "photo" : "report" }] : [];
+      }) : [];
+      if (!amountRupees || !appointmentDate || appointmentDate < today || typeof input.appointment_time !== "string" || !["Video Consultation", "Audio Consultation"].includes(input.consultation_type) || attachments.length !== (Array.isArray(input.attachments) ? input.attachments.slice(0, 10).length : 0)) return json({ error: "Invalid appointment details" }, 400);
+      payload = { doctor_name: input.doctor_name, doctor_initials: String(input.doctor_initials || "").slice(0, 4), appointment_date: appointmentDate, appointment_time: input.appointment_time.slice(0, 20), consultation_type: input.consultation_type, patient_notes: typeof input.patient_notes === "string" ? input.patient_notes.slice(0, 600) : null, symptom_tags: Array.isArray(input.symptom_tags) ? input.symptom_tags.slice(0, 10).map((tag: unknown) => String(tag).slice(0, 80)) : [], attachments };
     } else {
       const items = Array.isArray(body.items) ? body.items.slice(0, 30) : []; const addressId = String(body.address_id || "");
       if (!items.length || !/^[0-9a-f-]{36}$/i.test(addressId)) return json({ error: "Cart and delivery address are required" }, 400);
-      const ids = [...new Set(items.map((item: Record<string, unknown>) => String(item.product_id || "")).filter(Boolean))];
+      const ids: string[] = [...new Set<string>(items.map((item: Record<string, unknown>) => String(item.product_id || "")).filter(Boolean))];
       const productRows = await serviceQuery(`${supabaseUrl}/rest/v1/shop_products?select=id,price&id=in.(${ids.map(encodeURIComponent).join(",")})&active=eq.true`, serviceKey); const prices = new Map(productRows.map((item: Record<string, any>) => [item.id, Number(item.price)]));
       const verifiedItems = items.map((item: Record<string, unknown>) => ({ product_id: String(item.product_id || ""), quantity: Math.max(1, Math.min(20, Math.floor(Number(item.quantity) || 0))), unit_price: prices.get(String(item.product_id || "")) })).filter((item: Record<string, any>) => Number.isFinite(item.unit_price));
       if (!verifiedItems.length || verifiedItems.length !== items.length) return json({ error: "One or more products are unavailable" }, 409);
@@ -145,10 +153,10 @@ Deno.serve(async (request) => {
     const amountPaise = amountRupees * 100;
     const [transaction] = await serviceInsert(`${supabaseUrl}/rest/v1/payment_transactions`, { user_id: user.id, purpose, amount_paise: amountPaise, redirect_url: redirectUrl, payload }, serviceKey);
     const orderResponse = await fetch("https://api.razorpay.com/v1/orders", { method: "POST", headers: { Authorization: `Basic ${btoa(`${keyId}:${keySecret}`)}`, "Content-Type": "application/json" }, body: JSON.stringify({ amount: amountPaise, currency: "INR", receipt: `ayur_${transaction.id.replace(/-/g, "").slice(0, 24)}`, notes: { payment_ref: transaction.id, purpose, user_id: user.id } }) });
-    if (!orderResponse.ok) { const message = (await orderResponse.text()).slice(0, 300); await serviceUpdate(`${supabaseUrl}/rest/v1/payment_transactions?id=eq.${transaction.id}`, { status: "failed", error_message: message, updated_at: new Date().toISOString() }, serviceKey); throw new Error("Razorpay could not create the payment order"); }
+    if (!orderResponse.ok) { const message = (await orderResponse.text()).slice(0, 300); console.error("Razorpay order creation failed", orderResponse.status, message); await serviceUpdate(`${supabaseUrl}/rest/v1/payment_transactions?id=eq.${transaction.id}`, { status: "failed", error_message: "order_creation_failed", updated_at: new Date().toISOString() }, serviceKey); throw new Error("Razorpay could not create the payment order"); }
     const order = await orderResponse.json(); await serviceUpdate(`${supabaseUrl}/rest/v1/payment_transactions?id=eq.${transaction.id}`, { razorpay_order_id: order.id, updated_at: new Date().toISOString() }, serviceKey);
-    const nativeOptions = checkoutConfig({ ...transaction, razorpay_order_id: order.id }, keyId, functionUrl).options;
+    const nativeOptions: Record<string, unknown> = { ...checkoutConfig({ ...transaction, razorpay_order_id: order.id }, keyId, functionUrl).options };
     delete nativeOptions.callback_url; delete nativeOptions.redirect;
     return json({ payment_ref: transaction.id, amount: amountRupees, checkout_url: `${checkoutOrigin}/razorpay-checkout.html?token=${encodeURIComponent(transaction.checkout_token)}`, checkout_options: nativeOptions });
-  } catch (error) { console.error("Razorpay payment failed", error instanceof Error ? error.message : "Unexpected error"); return json({ error: error instanceof Error ? error.message : "Unexpected error" }, 500); }
+  } catch (error) { console.error("Razorpay payment failed", error instanceof Error ? error.message : "Unexpected error"); return publicError(corsHeaders, "The payment service is temporarily unavailable."); }
 });

@@ -51,7 +51,7 @@ const redFlagPatterns = [
 ];
 function isRedFlagMessage(message: string) { return redFlagPatterns.some(pattern => pattern.test(message)); }
 const redFlagReply = 'AYURNIDAAN_RED_FLAG_DETECTED';
-const redFlagDoctorHandoffKey = 'ayurnidaan:red-flag-doctor-handoff';
+let pendingRedFlagDoctorHandoff: string | null = null;
 const shopCartKey = (userId: string) => `ayurnidaan:shop-cart:${userId}`;
 const assessmentQuestions: AssessmentQuestion[] = [
   { prompt: 'How would you describe your natural body build?', options: { A: 'Thin or lean, with visible joints', B: 'Medium and balanced', C: 'Broad, heavy or muscular' } },
@@ -221,7 +221,7 @@ export default function App() {
       setScreen(hasDoctorDetails ? 'confirmation' : hasValidationDetails ? 'terms' : 'account');
       return;
     }
-    const hasBasicDetails = Boolean(data?.full_name?.trim() && data?.date_of_birth && data?.sex && data?.height_cm && data?.weight_kg);
+    const hasBasicDetails = Boolean(data?.full_name?.trim() && data?.date_of_birth && (ageFromDateOfBirth(data.date_of_birth) ?? 0) >= 18 && data?.sex && data?.height_cm && data?.weight_kg);
     const hasHealthGoals = Array.isArray(currentSession.user.user_metadata.health_goals) && currentSession.user.user_metadata.health_goals.length > 0;
     setScreen(data?.profile_completed_at ? 'home' : hasBasicDetails ? hasHealthGoals ? 'terms' : 'goals' : data?.full_name?.trim() ? 'profile' : 'account');
   }
@@ -412,6 +412,7 @@ function ProfileScreen({ session, onBack, onComplete }: { session: Session | nul
     if (!session?.user.id) return setError('Please sign in again.');
     const normalizedDob = dob ? localDateKey(dob) : null;
     if (!normalizedDob || !sex || !Number(height) || !Number(weight)) return setError('Complete every field and select your date of birth.');
+    if ((ageFromDateOfBirth(normalizedDob) ?? 0) < 18) return setError('Ayurnidaan is currently available only to people aged 18 or older.');
     setLoading(true); setError('');
     const { error: saveError } = await supabase.from('profiles').upsert({ user_id: session.user.id, full_name: session.user.user_metadata.full_name ?? null, date_of_birth: normalizedDob, sex, height_cm: Number(height), weight_kg: Number(weight) });
     setLoading(false); if (saveError) return setError(saveError.message); onComplete();
@@ -500,7 +501,7 @@ function TermsConsentScreen({ session, onBack, onComplete }: { session: Session 
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const ready = documentRead && personalisationAccepted && termsAccepted;
+  const ready = documentRead && termsAccepted;
   const documentPageWidth = Math.max(1, Math.min(documentViewport.width, documentViewport.height * 595 / 842)) * documentZoom;
   const documentPageHeight = documentPageWidth * 842 / 595;
   const documentContentWidth = Math.max(documentViewport.width, documentPageWidth);
@@ -512,23 +513,19 @@ function TermsConsentScreen({ session, onBack, onComplete }: { session: Session 
   async function finishConsent() {
     if (!ready || !session?.user.id) return;
     setSaving(true); setError('');
-    const acceptedAt = new Date().toISOString();
-    const { error: authError } = await supabase.auth.updateUser({ data: { terms_accepted_at: acceptedAt, personalisation_consent_at: acceptedAt } });
-    const { error: profileError } = await supabase.from('profiles').upsert({
-      user_id: session.user.id,
-      terms_accepted_at: acceptedAt,
-      profile_completed_at: acceptedAt,
-      notifications_enabled: true,
-      health_personalisation: true,
-      ai_context_enabled: true,
-      doctor_sharing_enabled: true,
+    const { error: consentError } = await supabase.rpc('record_consent', {
+      p_document_version: '5.0',
+      p_document_sha256: '4641d907ce0e3eaf2ac34d763bb69244ed58076a2c1657f288777041ea17ffff',
+      p_personalisation: personalisationAccepted,
+      p_ai_context: false,
+      p_doctor_sharing: false,
+      p_channel: Platform.OS,
     });
     setSaving(false);
-    if (authError) return setError(authError.message);
-    if (profileError) return setError(profileError.message);
+    if (consentError) return setError(consentError.message);
     onComplete();
   }
-return <SafeAreaView style={styles.termsSafe}><StatusBar style="dark" /><View style={styles.termsPage}><BackButton onPress={onBack} onboarding /><Text style={styles.termsTitle}>Terms &amp; consent</Text><Text style={styles.termsIntro}>Read the document below, then confirm both statements to finish setting up.</Text><View style={styles.termsDocumentCard} testID={`embedded-terms-pdf-${String(termsDocumentPdf)}`}><View style={styles.termsDocumentHeader}><View style={styles.termsPdfIcon}><Text style={styles.termsPdfIconText}>PDF</Text></View><View style={styles.termsDocumentHeaderCopy}><Text style={styles.termsDocumentName}>Terms, Privacy &amp; Consent</Text><Text style={styles.termsDocumentMeta}>v5.0 · 15 pages · Sep 2026</Text></View><Text style={[styles.termsScrollHint, documentRead && styles.termsScrollHintRead]}>{documentRead ? 'Read' : 'Scroll to read'}</Text></View><View style={styles.termsZoomBar}><Text style={styles.termsZoomLabel}>ZOOM · {Math.round(documentZoom * 100)}%</Text><View style={styles.termsZoomControls}><Pressable accessibilityLabel="Zoom out document" disabled={documentZoom <= 1} onPress={() => setDocumentZoom(value => Math.max(1, Number((value - .25).toFixed(2))))} style={[styles.termsZoomButton, documentZoom <= 1 && styles.termsZoomButtonDisabled]}><Text style={styles.termsZoomButtonText}>−</Text></Pressable><Pressable accessibilityLabel="Reset document zoom" onPress={() => setDocumentZoom(1)} style={styles.termsZoomReset}><Text style={styles.termsZoomResetText}>Fit</Text></Pressable><Pressable accessibilityLabel="Zoom in document" disabled={documentZoom >= 2.5} onPress={() => setDocumentZoom(value => Math.min(2.5, Number((value + .25).toFixed(2))))} style={[styles.termsZoomButton, documentZoom >= 2.5 && styles.termsZoomButtonDisabled]}><Text style={styles.termsZoomButtonText}>+</Text></Pressable></View></View><ScrollView horizontal bounces={false} nestedScrollEnabled showsHorizontalScrollIndicator onLayout={({ nativeEvent: { layout } }) => setDocumentViewport({ width: layout.width, height: layout.height })} style={styles.termsDocumentScroll} contentContainerStyle={[styles.termsDocumentHorizontalContent, { width: documentContentWidth }]}><ScrollView accessibilityLabel="Terms of Use, Privacy Notice and Consent document" nestedScrollEnabled onScroll={handleDocumentScroll} scrollEventThrottle={32} showsVerticalScrollIndicator style={[styles.termsDocumentVerticalScroll, { width: documentContentWidth }]}><View style={styles.termsDocumentPages}>{termsDocumentPages.map((page, index) => <Image key={index} source={page} resizeMode="contain" style={[styles.termsDocumentPage, { width: documentPageWidth, height: documentPageHeight }]} />)}<Text style={styles.termsDocumentEnd}>END OF DOCUMENT</Text></View></ScrollView></ScrollView></View><ConsentRow disabled={!documentRead} checked={personalisationAccepted} label="I allow my personal data to be used for personalization and recommendations." onPress={() => setPersonalisationAccepted(value => !value)} /><ConsentRow disabled={!documentRead} checked={termsAccepted} label="I have read and agree to the terms and conditions." onPress={() => setTermsAccepted(value => !value)} />{!documentRead ? <Text style={styles.termsLockedHint}>Scroll to the end of the document to enable consent.</Text> : null}{error ? <Text style={styles.termsError}>{error}</Text> : null}</View><View style={styles.termsFooter}><Pressable accessibilityRole="button" disabled={!ready || saving} onPress={finishConsent} style={[styles.termsContinue, ready && styles.termsContinueReady]}>{saving ? <ActivityIndicator color="#FFF" /> : <Text style={[styles.termsContinueText, ready && styles.termsContinueTextReady]}>{ready ? 'All set' : 'Continue'}</Text>}</Pressable></View></SafeAreaView>;
+return <SafeAreaView style={styles.termsSafe}><StatusBar style="dark" /><View style={styles.termsPage}><BackButton onPress={onBack} onboarding /><Text style={styles.termsTitle}>Terms &amp; consent</Text><Text style={styles.termsIntro}>Read the document below, choose whether to allow optional personalisation, then accept the terms to finish setting up.</Text><View style={styles.termsDocumentCard} testID={`embedded-terms-pdf-${String(termsDocumentPdf)}`}><View style={styles.termsDocumentHeader}><View style={styles.termsPdfIcon}><Text style={styles.termsPdfIconText}>PDF</Text></View><View style={styles.termsDocumentHeaderCopy}><Text style={styles.termsDocumentName}>Terms, Privacy &amp; Consent</Text><Text style={styles.termsDocumentMeta}>v5.0 · 15 pages · Sep 2026</Text></View><Text style={[styles.termsScrollHint, documentRead && styles.termsScrollHintRead]}>{documentRead ? 'Read' : 'Scroll to read'}</Text></View><View style={styles.termsZoomBar}><Text style={styles.termsZoomLabel}>ZOOM · {Math.round(documentZoom * 100)}%</Text><View style={styles.termsZoomControls}><Pressable accessibilityLabel="Zoom out document" disabled={documentZoom <= 1} onPress={() => setDocumentZoom(value => Math.max(1, Number((value - .25).toFixed(2))))} style={[styles.termsZoomButton, documentZoom <= 1 && styles.termsZoomButtonDisabled]}><Text style={styles.termsZoomButtonText}>−</Text></Pressable><Pressable accessibilityLabel="Reset document zoom" onPress={() => setDocumentZoom(1)} style={styles.termsZoomReset}><Text style={styles.termsZoomResetText}>Fit</Text></Pressable><Pressable accessibilityLabel="Zoom in document" disabled={documentZoom >= 2.5} onPress={() => setDocumentZoom(value => Math.min(2.5, Number((value + .25).toFixed(2))))} style={[styles.termsZoomButton, documentZoom >= 2.5 && styles.termsZoomButtonDisabled]}><Text style={styles.termsZoomButtonText}>+</Text></Pressable></View></View><ScrollView horizontal bounces={false} nestedScrollEnabled showsHorizontalScrollIndicator onLayout={({ nativeEvent: { layout } }) => setDocumentViewport({ width: layout.width, height: layout.height })} style={styles.termsDocumentScroll} contentContainerStyle={[styles.termsDocumentHorizontalContent, { width: documentContentWidth }]}><ScrollView accessibilityLabel="Terms of Use, Privacy Notice and Consent document" nestedScrollEnabled onScroll={handleDocumentScroll} scrollEventThrottle={32} showsVerticalScrollIndicator style={[styles.termsDocumentVerticalScroll, { width: documentContentWidth }]}><View style={styles.termsDocumentPages}>{termsDocumentPages.map((page, index) => <Image key={index} source={page} resizeMode="contain" style={[styles.termsDocumentPage, { width: documentPageWidth, height: documentPageHeight }]} />)}<Text style={styles.termsDocumentEnd}>END OF DOCUMENT</Text></View></ScrollView></ScrollView></View><ConsentRow disabled={!documentRead} checked={personalisationAccepted} label="Optional: use my personal data for personalisation and recommendations." onPress={() => setPersonalisationAccepted(value => !value)} /><ConsentRow disabled={!documentRead} checked={termsAccepted} label="I have read and agree to the terms and conditions." onPress={() => setTermsAccepted(value => !value)} />{!documentRead ? <Text style={styles.termsLockedHint}>Scroll to the end of the document to enable consent.</Text> : null}{error ? <Text style={styles.termsError}>{error}</Text> : null}</View><View style={styles.termsFooter}><Pressable accessibilityRole="button" disabled={!ready || saving} onPress={finishConsent} style={[styles.termsContinue, ready && styles.termsContinueReady]}>{saving ? <ActivityIndicator color="#FFF" /> : <Text style={[styles.termsContinueText, ready && styles.termsContinueTextReady]}>{ready ? 'All set' : 'Continue'}</Text>}</Pressable></View></SafeAreaView>;
 }
 
 function ConsentRow({ disabled, checked, label, onPress }: { disabled: boolean; checked: boolean; label: string; onPress: () => void }) {
@@ -1399,8 +1396,7 @@ function HomeScreen({ session, onStartPrakriti, onStartCurrentHealth, onOpenFood
       supabase.from('appointments').select('doctor_name, doctor_initials, appointment_date, appointment_time').eq('user_id', session.user.id).eq('status', 'booked').gte('appointment_date', today).order('appointment_date', { ascending: true }).order('created_at', { ascending: false }).limit(1).maybeSingle(),
       supabase.from('shop_products').select('id, name, weight, price, mrp, icon, categories, tags, description, rating, rating_count').eq('active', true).order('sort_order').limit(100),
       supabase.from('supplement_recommendation_plans').select('recommendations').eq('user_id', session.user.id).order('created_at', { ascending: false }).limit(1).maybeSingle(),
-      readStoredList<BookedAppointment>(demoAppointmentsKey(session.user.id)),
-    ]).then(([prakritiResult, healthResult, appointmentResult, productResult, recommendationResult, storedAppointments]) => {
+    ]).then(([prakritiResult, healthResult, appointmentResult, productResult, recommendationResult]) => {
       if (!active) return;
       const result = prakritiResult.data;
       if (!prakritiResult.error && !healthResult.error) {
@@ -1411,9 +1407,7 @@ function HomeScreen({ session, onStartPrakriti, onStartCurrentHealth, onOpenFood
         setLatestVikriti(snapshot.vikriti);
         setStatusReady(true); setStatusError(false);
       } else setStatusError(true);
-      const appointmentCandidates = [appointmentResult.data, ...storedAppointments].filter((item): item is NonNullable<typeof item> => Boolean(item && item.appointment_date >= today));
-      appointmentCandidates.sort((a, b) => `${a.appointment_date} ${a.appointment_time}`.localeCompare(`${b.appointment_date} ${b.appointment_time}`));
-      setAppointment(appointmentCandidates[0] ?? null);
+      setAppointment(appointmentResult.data ?? null);
       if (productResult.data?.length) {
         const allProducts = productResult.data.map(item => ({ ...item, categories: item.categories ?? [], tags: item.tags ?? [], rating: `${Number(item.rating).toFixed(1)} (${item.rating_count})` }));
         const recommendationPlan = recommendationResult.data?.recommendations as { recommendations?: { supplement?: unknown }[] } | null | undefined;
@@ -2158,19 +2152,6 @@ function CompletedHome({ firstName, percentages, dominantDosha, vikritiConclusio
 type ShopOrderItem = { product_id: string; quantity: number; unit_price: number; product: { name: string; weight: string; icon: string } | null };
 type ShopOrder = { id: string; total_amount: number; status: string; created_at: string; items: ShopOrderItem[] };
 type BookedAppointment = { id: string; doctor_name: string; doctor_initials: string; appointment_date: string; appointment_time: string; consultation_type: string; status: string; discussion_summary: string | null; prescription: string | null };
-const demoOrdersKey = (userId: string) => `ayurnidaan:demo-orders:${userId}`;
-const demoAppointmentsKey = (userId: string) => `ayurnidaan:demo-appointments:${userId}`;
-async function readStoredList<T>(key: string): Promise<T[]> {
-  try {
-    const value = await AsyncStorage.getItem(key);
-    const parsed = value ? JSON.parse(value) : [];
-    return Array.isArray(parsed) ? parsed as T[] : [];
-  } catch { return []; }
-}
-async function prependStoredItem<T>(key: string, item: T) {
-  const current = await readStoredList<T>(key);
-  await AsyncStorage.setItem(key, JSON.stringify([item, ...current]));
-}
 type ProfilePrakriti = 'Vata' | 'Pitta' | 'Kapha' | 'Vata-Pitta' | 'Pitta-Kapha' | 'Vata-Kapha' | 'Vata-Pitta-Kapha';
 type ProfileVikriti = 'Vata' | 'Pitta' | 'Kapha' | 'Vata-Pitta' | 'Pitta-Kapha' | 'Vata-Kapha' | 'Tridosha';
 type ProfileHealthResult = { conclusion: string | null; symptoms: string[] | null; vata_imbalanced: boolean; pitta_imbalanced: boolean; kapha_imbalanced: boolean; completed_at?: string };
@@ -2261,12 +2242,10 @@ function ProfileHub({ session, initialView = 'profile', onExit, onOpenFood, onOp
     void Promise.all([
       supabase.from('shop_orders').select('id', { count: 'exact', head: true }).eq('user_id', userId),
       supabase.from('appointments').select('id', { count: 'exact', head: true }).eq('user_id', userId).eq('status', 'booked').gte('appointment_date', today),
-      readStoredList<ShopOrder>(demoOrdersKey(userId)),
-      readStoredList<BookedAppointment>(demoAppointmentsKey(userId)),
-    ]).then(([orderResult, appointmentResult, storedOrders, storedAppointments]) => {
+    ]).then(([orderResult, appointmentResult]) => {
       if (!active) return;
-      setOrderCount((orderResult.count ?? 0) + storedOrders.length);
-      setUpcomingAppointmentCount((appointmentResult.count ?? 0) + storedAppointments.filter(item => item.status === 'booked' && item.appointment_date >= today).length);
+      setOrderCount(orderResult.count ?? 0);
+      setUpcomingAppointmentCount(appointmentResult.count ?? 0);
     });
     return () => { active = false; };
   }, [session?.user.id]);
@@ -2276,11 +2255,9 @@ function ProfileHub({ session, initialView = 'profile', onExit, onOpenFood, onOp
     const { data: orderRows } = await supabase.from('shop_orders').select('id, total_amount, status, created_at').eq('user_id', session.user.id).order('created_at', { ascending: false });
     const ids = (orderRows ?? []).map(order => order.id);
     const { data: itemRows } = ids.length ? await supabase.from('shop_order_items').select('order_id, product_id, quantity, unit_price, shop_products(name, weight, icon)').eq('user_id', session.user.id).in('order_id', ids) : { data: [] };
-    const storedOrders = await readStoredList<ShopOrder>(demoOrdersKey(session.user.id));
     const databaseOrders = (orderRows ?? []).map(order => ({ ...order, items: (itemRows ?? []).filter(item => item.order_id === order.id).map(item => ({ product_id: item.product_id, quantity: item.quantity, unit_price: item.unit_price, product: Array.isArray(item.shop_products) ? item.shop_products[0] ?? null : item.shop_products })) }));
-    const combinedOrders = [...storedOrders, ...databaseOrders].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-    setOrders(combinedOrders);
-    setOrderCount(combinedOrders.length);
+    setOrders(databaseOrders);
+    setOrderCount(databaseOrders.length);
     setLoadingOrders(false);
   }
   function showOrder(order: ShopOrder) { setSelectedOrder(order); setView('order'); }
@@ -2288,9 +2265,8 @@ function ProfileHub({ session, initialView = 'profile', onExit, onOpenFood, onOp
     if (!session?.user.id) return;
     setLoadingAppointments(true); setView('appointments');
     const { data } = await supabase.from('appointments').select('id, doctor_name, doctor_initials, appointment_date, appointment_time, consultation_type, status, discussion_summary, prescription').eq('user_id', session.user.id).order('appointment_date', { ascending: false }).order('created_at', { ascending: false });
-    const storedAppointments = await readStoredList<BookedAppointment>(demoAppointmentsKey(session.user.id));
-    const combinedAppointments = [...storedAppointments, ...(data ?? [])].sort((a, b) => b.appointment_date.localeCompare(a.appointment_date));
-    setAppointments(combinedAppointments); setUpcomingAppointmentCount(combinedAppointments.filter(item => item.status === 'booked' && item.appointment_date >= new Date().toISOString().slice(0, 10)).length); setLoadingAppointments(false);
+    const databaseAppointments = (data ?? []).sort((a, b) => b.appointment_date.localeCompare(a.appointment_date));
+    setAppointments(databaseAppointments); setUpcomingAppointmentCount(databaseAppointments.filter(item => item.status === 'booked' && item.appointment_date >= new Date().toISOString().slice(0, 10)).length); setLoadingAppointments(false);
   }
   useEffect(() => { if (initialView === 'appointments') void openAppointments(); }, [initialView, session?.user.id]);
   function showAppointment(appointment: BookedAppointment) { setSelectedAppointment(appointment); setView('appointment'); }
@@ -2330,12 +2306,22 @@ function ProfileHub({ session, initialView = 'profile', onExit, onOpenFood, onOp
   async function saveSettings() {
     if (!session?.user.id) return;
     setSavingSettings(true); setSettingsError('');
-    const { error } = await supabase.from('profiles').update({ notifications_enabled: notifications, diet_preference: diet, health_personalisation: healthPersonalisation, ai_context_enabled: aiContext, doctor_sharing_enabled: doctorSharing, updated_at: new Date().toISOString() }).eq('user_id', session.user.id);
+    const { error } = await supabase.rpc('update_privacy_settings', {
+      p_notifications: notifications,
+      p_diet: diet,
+      p_personalisation: healthPersonalisation,
+      p_ai_context: aiContext,
+      p_doctor_sharing: doctorSharing,
+      p_document_version: '5.0',
+      p_document_sha256: '4641d907ce0e3eaf2ac34d763bb69244ed58076a2c1657f288777041ea17ffff',
+      p_channel: Platform.OS,
+    });
     setSavingSettings(false); if (error) return setSettingsError(error.message); setView('profile');
   }
   async function saveProfile() {
     if (!session?.user.id) return setProfileError('Please sign in again.');
     if (!editName.trim() || !/^\d{4}-\d{2}-\d{2}$/.test(editDob) || !editSex || !Number(editHeight) || !Number(editWeight)) return setProfileError('Complete every field. Use YYYY-MM-DD for date of birth.');
+    if ((ageFromDateOfBirth(editDob) ?? 0) < 18) return setProfileError('Ayurnidaan is currently available only to people aged 18 or older.');
     setLoadingProfile(true); setProfileError('');
     const { error } = await supabase.from('profiles').update({ full_name: editName.trim(), date_of_birth: editDob, sex: editSex, height_cm: Number(editHeight), weight_kg: Number(editWeight), diet_preference: diet, updated_at: new Date().toISOString() }).eq('user_id', session.user.id);
     if (!error) await supabase.auth.updateUser({ data: { ...session.user.user_metadata, full_name: editName.trim() } });
@@ -2436,8 +2422,7 @@ function DeleteAccountModal({ visible, onClose, onDeleted }: { visible: boolean;
       if (deletionError || !data?.deleted) throw new Error('Could not delete your account. Please try again.');
       homeAssessmentCache = null;
       try {
-        const keys = await AsyncStorage.getAllKeys();
-        await AsyncStorage.multiRemove(keys.filter(key => key.includes(session.user.id)));
+        await AsyncStorage.removeItem(shopCartKey(session.user.id));
       } catch { /* Continue signing out after server deletion even if local cleanup fails. */ }
       await supabase.auth.signOut({ scope: 'local' });
       onDeleted();
@@ -2496,7 +2481,7 @@ function RedFlagSafeguardModal({ visible, userText, onClose, onDoctor }: { visib
         <View style={safeguardStyles.quote}><Text style={safeguardStyles.quoteLabel}>YOU WROTE</Text><Text style={safeguardStyles.quoteText}>{userText}</Text></View>
         <View style={safeguardStyles.bulletRow}><Text style={safeguardStyles.bullet}>•</Text><Text style={safeguardStyles.bulletText}>A registered Ayurveda doctor can review your symptoms and any reports you upload.</Text></View>
         <View style={safeguardStyles.bulletRow}><Text style={safeguardStyles.bullet}>•</Text><Text style={safeguardStyles.bulletText}>Your description can be copied into the consultation so you do not have to repeat it.</Text></View>
-        <Pressable onPress={() => { void AsyncStorage.setItem(redFlagDoctorHandoffKey, userText).finally(() => { onClose(); onDoctor(); }); }} style={safeguardStyles.doctorButton}><Text style={safeguardStyles.doctorButtonText}>♧  Book a doctor instead</Text></Pressable>
+        <Pressable onPress={() => { pendingRedFlagDoctorHandoff = userText.trim(); onClose(); onDoctor(); }} style={safeguardStyles.doctorButton}><Text style={safeguardStyles.doctorButtonText}>♧  Book a doctor instead</Text></Pressable>
         <Pressable onPress={onClose} style={safeguardStyles.closeButton}><Text style={safeguardStyles.closeButtonText}>Close</Text></Pressable>
         <View style={safeguardStyles.divider} /><Text style={safeguardStyles.emergency}>If this is an emergency, call 112 or go to the nearest hospital. Do not wait for a consultation.</Text>
       </View>
@@ -2555,10 +2540,6 @@ type PlacedShopOrder = { id: string; itemCount: number; total: number; addressLa
 type PaymentMethod = 'upi' | 'card' | 'netbanking';
 type PaymentPurpose = 'appointment' | 'shop';
 type PaymentSummary = { icon: string; title: string; detail: string };
-// Temporary launch mode: retain the full Razorpay flow below, but fulfil orders
-// immediately until live payment collection is switched back on.
-const PAYMENT_PROCESSING_ENABLED = false;
-
 function PaymentScreen({ purpose, amount, summary, requestPayload, onBack, onPaid }: { purpose: PaymentPurpose; amount: number; summary: PaymentSummary; requestPayload: Record<string, unknown>; onBack: () => void; onPaid: (resourceId: string) => void | Promise<void> }) {
   const [method, setMethod] = useState<PaymentMethod>('upi');
   const [coupon, setCoupon] = useState('');
@@ -2579,12 +2560,6 @@ function PaymentScreen({ purpose, amount, summary, requestPayload, onBack, onPai
     setPaying(true); setError('');
     try {
       const redirectUrl = AuthSession.makeRedirectUri({ scheme: process.env.EXPO_PUBLIC_APP_ENV === 'development' ? 'ayurnidaan-dev' : 'ayurnidaan', path: 'payment-callback' });
-      if (!PAYMENT_PROCESSING_ENABLED) {
-        setVerifying(true);
-        await new Promise(resolve => setTimeout(resolve, 700));
-        await onPaid(`demo-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
-        return;
-      }
       const { data, error: createError } = await supabase.functions.invoke('razorpay-payment', { body: { action: 'create', purpose, redirect_url: redirectUrl, ...requestPayload } });
       if (createError || typeof data?.checkout_url !== 'string' || typeof data?.payment_ref !== 'string') throw new Error(await paymentErrorMessage(createError, data) || 'Could not start the payment.');
       if (Platform.OS !== 'web') {
@@ -2618,7 +2593,7 @@ function PaymentScreen({ purpose, amount, summary, requestPayload, onBack, onPai
     finally { setVerifying(false); setPaying(false); }
   }
   if (verifying) return <FlowLoading kind="payment" />;
-  return <SafeAreaView style={styles.paymentSafe}><StatusBar style="dark" /><KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.paymentScreen}><ScrollView contentContainerStyle={styles.paymentContent} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}><BackButton onPress={onBack} onboarding /><View style={styles.paymentHeading}><View><Text style={styles.paymentEyebrow}>{purpose === 'appointment' ? 'CONSULTATION' : 'ORDER'}</Text><Text style={styles.paymentTitle}>Payment</Text></View><Text style={styles.paymentAmount}>₹{amount.toLocaleString('en-IN')}</Text></View><View style={styles.paymentSummaryCard}><View style={styles.paymentSummaryIcon}><Text style={styles.paymentSummaryIconText}>{summary.icon}</Text></View><View style={styles.paymentSummaryCopy}><Text style={styles.paymentSummaryTitle}>{summary.title}</Text><Text style={styles.paymentSummaryDetail}>{summary.detail}</Text></View></View><Text style={styles.paymentSectionLabel}>PAY USING</Text><View style={styles.paymentMethods}>{methods.map(option => <Pressable key={option.key} onPress={() => setMethod(option.key)} style={[styles.paymentMethod, method === option.key && styles.paymentMethodSelected]}><View style={[styles.paymentRadio, method === option.key && styles.paymentRadioSelected]}>{method === option.key ? <View style={styles.paymentRadioDot} /> : null}</View><View style={styles.paymentMethodCopy}><Text style={styles.paymentMethodTitle}>{option.title}</Text><Text style={styles.paymentMethodDetail}>{option.detail}</Text></View>{option.aside ? <Text style={styles.paymentMethodAside}>{option.aside}</Text> : null}</Pressable>)}</View><View style={styles.paymentUnavailableMethod}><View style={styles.paymentRadio} /><View><Text style={styles.paymentMethodTitle}>Ayurnidaan wallet</Text><Text style={styles.paymentMethodDetail}>Coming soon</Text></View></View><View style={styles.paymentUnavailableMethod}><View style={styles.paymentRadio} /><View><Text style={styles.paymentMethodTitle}>{purpose === 'appointment' ? 'Pay at the clinic' : 'Cash on delivery'}</Text><Text style={styles.paymentMethodDetail}>Unavailable for this checkout</Text></View></View>{method === 'upi' ? <View style={styles.paymentUpiCard}><Text style={styles.paymentFieldLabel}>UPI APPS</Text><Text style={styles.paymentInputHelp}>Continue to Razorpay to choose an available UPI app on this device. Your payment details will be filled automatically.</Text></View> : null}<Text style={styles.paymentSectionLabel}>COUPON</Text><View style={styles.paymentCouponRow}><TextInput value={coupon} onChangeText={setCoupon} autoCapitalize="characters" placeholder="ENTER CODE" placeholderTextColor="#7E8781" style={[styles.paymentInput, styles.paymentCouponInput]} /><Pressable style={styles.paymentCouponButton}><Text style={styles.paymentCouponText}>Apply</Text></Pressable></View><Text style={styles.paymentSectionLabel}>AMOUNT</Text><View style={styles.paymentBreakdown}><View style={styles.paymentBreakdownRow}><Text style={styles.paymentBreakdownLabel}>{purpose === 'appointment' ? 'Consultation fee' : 'Subtotal'}</Text><Text style={styles.paymentBreakdownValue}>₹{amount.toLocaleString('en-IN')}</Text></View>{purpose === 'shop' ? <View style={styles.paymentBreakdownRow}><Text style={styles.paymentBreakdownLabel}>Delivery</Text><Text style={styles.paymentBreakdownValue}>Free</Text></View> : null}<View style={[styles.paymentBreakdownRow, styles.paymentBreakdownTotal]}><Text style={styles.paymentTotalLabel}>Total payable</Text><Text style={styles.paymentTotalValue}>₹{amount.toLocaleString('en-IN')}</Text></View></View><Text style={styles.paymentSecurity}>{PAYMENT_PROCESSING_ENABLED ? '♢  Payments are processed by Razorpay. Card and UPI credentials are never stored by Ayurnidaan.' : 'Test mode · No payment will be collected. Your confirmation will be saved on this device.'}</Text>{error ? <Text style={styles.paymentError}>{error}</Text> : null}</ScrollView><View style={styles.paymentFooter}><Pressable disabled={paying} onPress={() => void pay()} style={[styles.paymentPayButton, paying && styles.foodButtonDisabled]}>{paying ? <ActivityIndicator color="#FFF" /> : <Text style={styles.paymentPayText}>Pay ₹{amount.toLocaleString('en-IN')}</Text>}</Pressable><Text style={styles.paymentEncrypted}>{PAYMENT_PROCESSING_ENABLED ? 'Secured by 256-bit encryption' : 'Temporary test checkout'}</Text></View></KeyboardAvoidingView></SafeAreaView>;
+  return <SafeAreaView style={styles.paymentSafe}><StatusBar style="dark" /><KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.paymentScreen}><ScrollView contentContainerStyle={styles.paymentContent} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}><BackButton onPress={onBack} onboarding /><View style={styles.paymentHeading}><View><Text style={styles.paymentEyebrow}>{purpose === 'appointment' ? 'CONSULTATION' : 'ORDER'}</Text><Text style={styles.paymentTitle}>Payment</Text></View><Text style={styles.paymentAmount}>₹{amount.toLocaleString('en-IN')}</Text></View><View style={styles.paymentSummaryCard}><View style={styles.paymentSummaryIcon}><Text style={styles.paymentSummaryIconText}>{summary.icon}</Text></View><View style={styles.paymentSummaryCopy}><Text style={styles.paymentSummaryTitle}>{summary.title}</Text><Text style={styles.paymentSummaryDetail}>{summary.detail}</Text></View></View><Text style={styles.paymentSectionLabel}>PAY USING</Text><View style={styles.paymentMethods}>{methods.map(option => <Pressable key={option.key} onPress={() => setMethod(option.key)} style={[styles.paymentMethod, method === option.key && styles.paymentMethodSelected]}><View style={[styles.paymentRadio, method === option.key && styles.paymentRadioSelected]}>{method === option.key ? <View style={styles.paymentRadioDot} /> : null}</View><View style={styles.paymentMethodCopy}><Text style={styles.paymentMethodTitle}>{option.title}</Text><Text style={styles.paymentMethodDetail}>{option.detail}</Text></View>{option.aside ? <Text style={styles.paymentMethodAside}>{option.aside}</Text> : null}</Pressable>)}</View><View style={styles.paymentUnavailableMethod}><View style={styles.paymentRadio} /><View><Text style={styles.paymentMethodTitle}>Ayurnidaan wallet</Text><Text style={styles.paymentMethodDetail}>Coming soon</Text></View></View><View style={styles.paymentUnavailableMethod}><View style={styles.paymentRadio} /><View><Text style={styles.paymentMethodTitle}>{purpose === 'appointment' ? 'Pay at the clinic' : 'Cash on delivery'}</Text><Text style={styles.paymentMethodDetail}>Unavailable for this checkout</Text></View></View>{method === 'upi' ? <View style={styles.paymentUpiCard}><Text style={styles.paymentFieldLabel}>UPI APPS</Text><Text style={styles.paymentInputHelp}>Continue to Razorpay to choose an available UPI app on this device. Your payment details will be filled automatically.</Text></View> : null}<Text style={styles.paymentSectionLabel}>COUPON</Text><View style={styles.paymentCouponRow}><TextInput value={coupon} onChangeText={setCoupon} autoCapitalize="characters" placeholder="ENTER CODE" placeholderTextColor="#7E8781" style={[styles.paymentInput, styles.paymentCouponInput]} /><Pressable style={styles.paymentCouponButton}><Text style={styles.paymentCouponText}>Apply</Text></Pressable></View><Text style={styles.paymentSectionLabel}>AMOUNT</Text><View style={styles.paymentBreakdown}><View style={styles.paymentBreakdownRow}><Text style={styles.paymentBreakdownLabel}>{purpose === 'appointment' ? 'Consultation fee' : 'Subtotal'}</Text><Text style={styles.paymentBreakdownValue}>₹{amount.toLocaleString('en-IN')}</Text></View>{purpose === 'shop' ? <View style={styles.paymentBreakdownRow}><Text style={styles.paymentBreakdownLabel}>Delivery</Text><Text style={styles.paymentBreakdownValue}>Free</Text></View> : null}<View style={[styles.paymentBreakdownRow, styles.paymentBreakdownTotal]}><Text style={styles.paymentTotalLabel}>Total payable</Text><Text style={styles.paymentTotalValue}>₹{amount.toLocaleString('en-IN')}</Text></View></View><Text style={styles.paymentSecurity}>♢  Payments are processed by Razorpay. Card and UPI credentials are never stored by Ayurnidaan.</Text>{error ? <Text style={styles.paymentError}>{error}</Text> : null}</ScrollView><View style={styles.paymentFooter}><Pressable disabled={paying} onPress={() => void pay()} style={[styles.paymentPayButton, paying && styles.foodButtonDisabled]}>{paying ? <ActivityIndicator color="#FFF" /> : <Text style={styles.paymentPayText}>Pay ₹{amount.toLocaleString('en-IN')}</Text>}</Pressable><Text style={styles.paymentEncrypted}>Secured by 256-bit encryption</Text></View></KeyboardAvoidingView></SafeAreaView>;
 }
 const shopCategories = ['Digestive Health', 'Stress & Sleep', 'Energy & Vitality', 'Immunity & Wellness', 'Joint & Muscle Health', 'Respiratory Health', 'Skin & Hair', "Women's Wellness", "Men's Wellness", 'Urinary & Kidney Health', 'Heart & Circulatory Health', 'Weight & Metabolism', 'Detox & Cleansing', 'Cognitive & Memory', 'General Wellness'];
 const products: Product[] = [
@@ -2734,7 +2709,7 @@ function ShopFlow({ session, cart, setCart, onExit, onOpenDoctor, onOpenFood, on
     setOrderError(''); setStage('payment');
   }
   if (stage === 'address') return <AddressBook mode={addressReturn === 'checkout' ? 'checkout' : 'shopping'} total={cartTotal} addresses={addresses} selected={selectedAddress} adding={addingAddress} choiceOpen={addressChoiceOpen} locating={locatingAddress} fields={{ addressLabel, recipientName, addressLine, addressCity, addressState, addressPostcode }} error={addressError} onSelect={setSelectedAddress} onToggleAdd={() => { setAddressError(''); if (addingAddress) setAddingAddress(false); else setAddressChoiceOpen(true); }} onCloseChoice={() => setAddressChoiceOpen(false)} onManual={startManualAddress} onLocation={() => void useCurrentLocationForAddress()} onField={(field, value) => { if (field === 'label') setAddressLabel(value); if (field === 'name') setRecipientName(value); if (field === 'line') setAddressLine(value); if (field === 'city') setAddressCity(value); if (field === 'state') setAddressState(value); if (field === 'postcode') setAddressPostcode(value); }} onSave={saveAddress} onBack={() => setStage(addressReturn === 'checkout' ? 'cart' : 'home')} onConfirm={confirmAddress} confirming={placingOrder} />;
-  if (stage === 'payment' && selectedAddress) return <PaymentScreen purpose="shop" amount={cartTotal} summary={{ icon: '♧', title: `${cartCount} ${cartCount === 1 ? 'product' : 'products'} · Ayurnidaan store`, detail: `Delivering to ${selectedAddress.label} · ${selectedAddress.address_line}, ${selectedAddress.city} · arrives in 3–5 days` }} requestPayload={{ items: cartItems.map(({ product, quantity }) => ({ product_id: product.id, quantity })), address_id: selectedAddress.id }} onBack={() => setStage('address')} onPaid={async orderId => { const storedOrder: ShopOrder = { id: orderId, total_amount: cartTotal, status: 'placed', created_at: new Date().toISOString(), items: cartItems.map(({ product, quantity }) => ({ product_id: product.id, quantity, unit_price: product.price, product: { name: product.name, weight: product.weight, icon: product.icon } })) }; if (session?.user.id) await prependStoredItem(demoOrdersKey(session.user.id), storedOrder); setPreviouslyOrderedIds(current => [...new Set([...current, ...cartItems.map(item => item.product.id)])]); setPlacedOrder({ id: orderId, itemCount: cartCount, total: cartTotal, addressLabel: selectedAddress.label }); setStage('success'); }} />;
+  if (stage === 'payment' && selectedAddress) return <PaymentScreen purpose="shop" amount={cartTotal} summary={{ icon: '♧', title: `${cartCount} ${cartCount === 1 ? 'product' : 'products'} · Ayurnidaan store`, detail: `Delivering to ${selectedAddress.label} · ${selectedAddress.address_line}, ${selectedAddress.city} · arrives in 3–5 days` }} requestPayload={{ items: cartItems.map(({ product, quantity }) => ({ product_id: product.id, quantity })), address_id: selectedAddress.id }} onBack={() => setStage('address')} onPaid={async orderId => { setPreviouslyOrderedIds(current => [...new Set([...current, ...cartItems.map(item => item.product.id)])]); setPlacedOrder({ id: orderId, itemCount: cartCount, total: cartTotal, addressLabel: selectedAddress.label }); setStage('success'); }} />;
   if (stage === 'success') return <OrderSuccess order={placedOrder} onReturn={() => { setCart({}); setPlacedOrder(null); setStage('home'); }} />;
   if (stage === 'cart') return <ShopCart items={cartItems} total={cartTotal} error={orderError} placing={placingOrder} onBack={() => setStage('home')} onChange={changeQuantity} onCheckout={() => checkout()} />;
   if (stage === 'details') return <SafeAreaView style={styles.shopSafe}><StatusBar style="dark" /><ScrollView contentContainerStyle={styles.productDetailPage}><BackButton onPress={() => setStage('home')} /><Text style={styles.shopTitle}>Product Details</Text><View style={styles.productDetailHero}><View style={styles.productDetailCopy}><Text style={styles.productDetailName}>{selected.name}</Text><Text style={styles.productWeight}>{selected.weight}</Text></View><ProductVisual product={selected} /></View><Text style={styles.productDetailPrice}>₹{selected.price}</Text><Text style={styles.productMrp}>MRP ₹{selected.mrp}</Text><View style={styles.ratingLine}><Text style={styles.ratingStar}>★</Text><Text style={styles.ratingText}>{selected.rating}</Text></View><Text style={styles.productDescription}>{selected.description}</Text><View style={styles.productAction}>{cart[selected.id] ? <ProductQuantityControl quantity={cart[selected.id]} onDecrease={() => changeQuantity(selected.id, -1)} onIncrease={() => changeQuantity(selected.id, 1)} large /> : <PrimaryButton label="Add to Cart" onPress={() => addToCart(selected)} />}</View></ScrollView><CartButton count={cartCount} onPress={() => setStage('cart')} /></SafeAreaView>;
@@ -2784,7 +2759,7 @@ function AddressBook({ mode, total, addresses, selected, adding, choiceOpen, loc
 
 function OrderSummary({ total }: { total: number }) { return <View style={styles.orderSummaryCard}><View style={styles.orderSummaryRow}><Text style={styles.orderSummaryText}>Subtotal</Text><Text style={styles.orderSummaryText}>₹{total.toLocaleString('en-IN')}</Text></View><View style={styles.orderSummaryRow}><Text style={styles.orderSummaryText}>Delivery</Text><Text style={styles.orderSummaryText}>Free</Text></View><View style={styles.orderSummaryRow}><Text style={styles.orderSummaryTotal}>Total</Text><Text style={styles.orderSummaryTotal}>₹{total.toLocaleString('en-IN')}</Text></View></View>; }
 
-function OrderSuccess({ order, onReturn }: { order: PlacedShopOrder | null; onReturn: () => void }) { const today = new Date(); const start = new Date(today); const end = new Date(today); start.setDate(today.getDate() + 5); end.setDate(today.getDate() + 7); const month = end.toLocaleDateString('en-IN', { month: 'short' }); const arrival = `${start.getDate()}–${end.getDate()} ${month} ${end.getFullYear()}`; return <Pressable accessibilityRole="button" accessibilityLabel="Return to shop" onPress={onReturn} style={styles.shopOrderSuccessPage}><StatusBar style="light" /><View style={styles.shopOrderSuccessDecor} /><View style={styles.shopOrderSuccessCheck}><Text style={styles.shopOrderSuccessCheckText}>✓</Text></View><Text style={styles.shopOrderSuccessTitle}>Order placed</Text><Text style={styles.shopOrderSuccessCopy}>Your Ayurvedic wellness products are being prepared. We will keep you updated on your order.</Text><View style={styles.shopOrderSuccessSummary}><SuccessRow label="ORDER" value={`#AY${(order?.id ?? '0000').slice(0, 4).toUpperCase()}`} /><SuccessRow label="ITEMS" value={`${order?.itemCount ?? 0} products`} /><SuccessRow label="DELIVER TO" value={order?.addressLabel ?? 'Home'} /><SuccessRow label="ARRIVING" value={arrival} /><SuccessRow label={PAYMENT_PROCESSING_ENABLED ? 'PAID' : 'TOTAL'} value={`₹${(order?.total ?? 0).toLocaleString('en-IN')}`} last /></View><Text style={styles.shopOrderSuccessTap}>Tap anywhere to return to the shop</Text></Pressable>; }
+function OrderSuccess({ order, onReturn }: { order: PlacedShopOrder | null; onReturn: () => void }) { const today = new Date(); const start = new Date(today); const end = new Date(today); start.setDate(today.getDate() + 5); end.setDate(today.getDate() + 7); const month = end.toLocaleDateString('en-IN', { month: 'short' }); const arrival = `${start.getDate()}–${end.getDate()} ${month} ${end.getFullYear()}`; return <Pressable accessibilityRole="button" accessibilityLabel="Return to shop" onPress={onReturn} style={styles.shopOrderSuccessPage}><StatusBar style="light" /><View style={styles.shopOrderSuccessDecor} /><View style={styles.shopOrderSuccessCheck}><Text style={styles.shopOrderSuccessCheckText}>✓</Text></View><Text style={styles.shopOrderSuccessTitle}>Order placed</Text><Text style={styles.shopOrderSuccessCopy}>Your Ayurvedic wellness products are being prepared. We will keep you updated on your order.</Text><View style={styles.shopOrderSuccessSummary}><SuccessRow label="ORDER" value={`#AY${(order?.id ?? '0000').slice(0, 4).toUpperCase()}`} /><SuccessRow label="ITEMS" value={`${order?.itemCount ?? 0} products`} /><SuccessRow label="DELIVER TO" value={order?.addressLabel ?? 'Home'} /><SuccessRow label="ARRIVING" value={arrival} /><SuccessRow label="PAID" value={`₹${(order?.total ?? 0).toLocaleString('en-IN')}`} last /></View><Text style={styles.shopOrderSuccessTap}>Tap anywhere to return to the shop</Text></Pressable>; }
 function SuccessRow({ label, value, last = false }: { label: string; value: string; last?: boolean }) { return <View style={[styles.shopOrderSuccessRow, last && styles.shopOrderSuccessRowLast]}><Text style={styles.shopOrderSuccessLabel}>{label}</Text><Text style={styles.shopOrderSuccessValue}>{value}</Text></View>; }
 
 function ShopProductCard({ product, quantity, onOpen, onAdd, onDecrease, onIncrease }: { product: Product; quantity: number; onOpen: () => void; onAdd: () => void; onDecrease: () => void; onIncrease: () => void }) { return <Pressable onPress={onOpen} style={({ pressed }) => [styles.productCard, pressed && styles.pressed]}><ProductVisual product={product} /><Text numberOfLines={1} style={styles.productName}>{product.name}</Text><Text numberOfLines={1} style={styles.productWeight}>{product.weight}</Text><Text style={styles.productPrice}>₹{product.price}</Text>{quantity ? <ProductQuantityControl quantity={quantity} onDecrease={onDecrease} onIncrease={onIncrease} /> : <Pressable onPress={(event) => { event.stopPropagation(); onAdd(); }} style={styles.quickAdd}><Text style={styles.quickAddText}>Add to cart</Text></Pressable>}</Pressable>; }
@@ -2840,21 +2815,16 @@ function DoctorFlow({ session, onExit, onOpenAppointments, onOpenFood, onOpenSho
   const [showAllDoctors, setShowAllDoctors] = useState(false);
   const [upcomingAppointmentCount, setUpcomingAppointmentCount] = useState(0);
   useEffect(() => {
-    let active = true;
-    void AsyncStorage.getItem(redFlagDoctorHandoffKey).then(async value => {
-      if (active && value?.trim()) { setNotes(value.trim()); setStage('intake'); }
-      if (value !== null) await AsyncStorage.removeItem(redFlagDoctorHandoffKey);
-    });
-    return () => { active = false; };
+    const value = pendingRedFlagDoctorHandoff;
+    pendingRedFlagDoctorHandoff = null;
+    if (value) { setNotes(value); setStage('intake'); }
   }, []);
   useEffect(() => {
     if (!session?.user.id) return;
     let active = true;
     const userId = session.user.id; const today = new Date().toISOString().slice(0, 10);
-    void Promise.all([
-      supabase.from('appointments').select('id', { count: 'exact', head: true }).eq('user_id', userId).eq('status', 'booked').gte('appointment_date', today),
-      readStoredList<BookedAppointment>(demoAppointmentsKey(userId)),
-    ]).then(([result, stored]) => { if (active) setUpcomingAppointmentCount((result.count ?? 0) + stored.filter(item => item.status === 'booked' && item.appointment_date >= today).length); });
+    void supabase.from('appointments').select('id', { count: 'exact', head: true }).eq('user_id', userId).eq('status', 'booked').gte('appointment_date', today)
+      .then(result => { if (active) setUpcomingAppointmentCount(result.count ?? 0); });
     return () => { active = false; };
   }, [session?.user.id, stage]);
   useAndroidBack(() => {
@@ -2876,7 +2846,7 @@ function DoctorFlow({ session, onExit, onOpenAppointments, onOpenFood, onOpenSho
   }
   if (findingDoctors) return <FlowLoading kind="doctors" />;
   if (stage === 'confirmed') return <AppointmentConfirmation doctor={doctor} date={appointmentDate} time={time} consultationType={consultationType} onAppointments={onOpenAppointments} onHome={onExit} />;
-  if (stage === 'payment') return <PaymentScreen purpose="appointment" amount={doctor.fee} summary={{ icon: '♧', title: doctor.name, detail: `${consultationType} · ${formatAppointmentDate(appointmentDate)} · ${time} · 30 minutes` }} requestPayload={{ appointment: { doctor_name: doctor.name, doctor_initials: doctor.initials, appointment_date: appointmentDate, appointment_time: time, consultation_type: consultationType, patient_notes: notes.trim() || null, symptom_tags: selectedTags, attachments: attachments.map(item => ({ name: item.name, size: item.size, storage_path: item.storagePath, type: item.type })) } }} onBack={() => setStage('schedule')} onPaid={async appointmentId => { if (session?.user.id) await prependStoredItem(demoAppointmentsKey(session.user.id), { id: appointmentId, doctor_name: doctor.name, doctor_initials: doctor.initials, appointment_date: appointmentDate, appointment_time: time, consultation_type: consultationType, status: 'booked', discussion_summary: null, prescription: null }); setStage('confirmed'); }} />;
+  if (stage === 'payment') return <PaymentScreen purpose="appointment" amount={doctor.fee} summary={{ icon: '♧', title: doctor.name, detail: `${consultationType} · ${formatAppointmentDate(appointmentDate)} · ${time} · 30 minutes` }} requestPayload={{ appointment: { doctor_name: doctor.name, doctor_initials: doctor.initials, appointment_date: appointmentDate, appointment_time: time, consultation_type: consultationType, patient_notes: notes.trim() || null, symptom_tags: selectedTags, attachments: attachments.map(item => ({ name: item.name, size: item.size, storage_path: item.storagePath, type: item.type })) } }} onBack={() => setStage('schedule')} onPaid={async () => { setStage('confirmed'); }} />;
   if (stage === 'schedule') return <AppointmentScheduler doctor={doctor} saving={saving} error={saveError} onBack={() => setStage('profile')} onConfirm={confirmAppointment} />;
   if (stage === 'profile') return <DoctorProfile doctor={doctor} onBack={() => setStage('matches')} onBook={() => setStage('schedule')} />;
   if (stage === 'matches') return <DoctorMatchesScreen selectedTags={selectedTags} attachments={attachments} recommended={recommendedDoctors} specialtyFilter={specialtyFilter} showAll={showAllDoctors || !selectedTags.length} onBack={() => setStage('intake')} onFilter={setSpecialtyFilter} onToggleAll={() => setShowAllDoctors(value => !value)} onSelectDoctor={selectDoctor} onExit={onExit} onDoctorHome={() => setStage('landing')} onOpenFood={onOpenFood} onOpenShop={onOpenShop} onOpenAI={onOpenAI} />;
@@ -2977,7 +2947,7 @@ function AppointmentScheduler({ doctor, saving, error, onBack, onConfirm }: { do
   return <SafeAreaView style={styles.doctorSafe}><StatusBar style="dark" /><ScrollView contentContainerStyle={styles.schedulerPage}><BackButton onPress={onBack} onboarding /><Text style={styles.doctorTitle}>Select date &amp; time</Text><Text style={styles.schedulerDoctor}>{doctor.name} · ₹{doctor.fee}</Text><View style={styles.calendarCard}><View style={styles.monthRow}><Pressable disabled={!canGoBack} onPress={() => moveMonth(-1)}><Text style={[styles.monthArrow, !canGoBack && styles.monthArrowDisabled]}>‹</Text></Pressable><Text style={styles.monthTitle}>{monthLabel}</Text><Pressable disabled={!canGoForward} onPress={() => moveMonth(1)}><Text style={[styles.monthArrow, !canGoForward && styles.monthArrowDisabled]}>›</Text></Pressable></View><View style={styles.calendarGrid}>{['SUN','MON','TUE','WED','THU','FRI','SAT'].map(label => <Text key={label} style={styles.weekday}>{label}</Text>)}{Array.from({ length: leadingBlanks }, (_, index) => <View key={`blank-${index}`} style={styles.calendarDay} />)}{Array.from({ length: daysInMonth }, (_, index) => index + 1).map(day => { const date = new Date(visibleMonth.getFullYear(), visibleMonth.getMonth(), day); const dateKey = localDateKey(date); const disabled = date < today || date > lastDate; const selected = dateKey === selectedDate; return <Pressable key={dateKey} disabled={disabled} onPress={() => setSelectedDate(dateKey)} style={[styles.calendarDay, selected && styles.calendarDaySelected]}><Text style={[styles.calendarDayText, disabled && styles.calendarDayTextDisabled, selected && styles.calendarDayTextSelected]}>{day}</Text></Pressable>; })}</View></View><View style={styles.slotsHeading}><Text style={styles.doctorLabel}>AVAILABLE SLOTS</Text><Text style={styles.slotsDate}>{formatAppointmentDate(selectedDate)}</Text></View><View style={styles.slotGrid}>{slots.map(slot => <Pressable key={slot.value} disabled={!slot.available} onPress={() => setSelectedTime(slot.value)} style={[styles.slot, selectedTime === slot.value && styles.slotSelected, !slot.available && styles.slotDisabled]}><Text style={[styles.slotText, selectedTime === slot.value && styles.slotTextSelected, !slot.available && styles.slotTextDisabled]}>{slot.value}</Text></Pressable>)}</View><Text style={styles.doctorLabel}>CONSULTATION TYPE</Text><View style={styles.consultationTypeRow}>{(['Video Consultation', 'Audio Consultation'] as const).map(type => <Pressable key={type} onPress={() => setSelectedType(type)} style={[styles.consultationTypeCard, selectedType === type && styles.consultationTypeSelected]}><Text style={styles.consultationTypeTitle}>{type.replace(' Consultation', '')}</Text><Text style={styles.consultationTypeCopy}>{type === 'Video Consultation' ? 'Video call in the app' : 'Voice call in the app'}</Text></Pressable>)}</View>{error ? <Text style={styles.error}>{error}</Text> : null}</ScrollView><View style={styles.schedulerFooter}><PrimaryButton label="Confirm appointment" loading={saving} onPress={() => onConfirm(selectedDate, selectedTime, selectedType)} /></View></SafeAreaView>;
 }
 
-function AppointmentConfirmation({ doctor, date, time, consultationType, onAppointments, onHome }: { doctor: Doctor; date: string; time: string; consultationType: ConsultationType; onAppointments: () => void; onHome: () => void }) { const rows = [['DOCTOR', doctor.name], ['DATE', formatAppointmentDate(date)], ['TIME', time], ['TYPE', consultationType.replace(' Consultation', ' consultation')], ['FEE', `₹${doctor.fee} · ${PAYMENT_PROCESSING_ENABLED ? 'paid' : 'test mode'}`]]; return <SafeAreaView style={styles.confirmedSafe}><StatusBar style="light" /><View style={styles.confirmedDecor} /><View style={styles.confirmedPage}><View style={styles.appointmentCheck}><Text style={styles.appointmentCheckText}>✓</Text></View><Text style={styles.confirmedTitle}>Appointment confirmed</Text><Text style={styles.confirmedNote}>We have saved the details and will{`\n`}remind you an hour before.</Text><View style={styles.confirmedSummary}>{rows.map(([label, value], index) => <View key={label} style={[styles.confirmedRow, index === rows.length - 1 && styles.confirmedRowLast]}><Text style={styles.confirmedLabel}>{label}</Text><Text style={styles.confirmedValue}>{value}</Text></View>)}</View><View style={styles.confirmedActions}><Pressable onPress={onAppointments} style={styles.confirmedPrimary}><Text style={styles.confirmedPrimaryText}>Go to my appointments</Text></Pressable><Pressable onPress={onHome} style={styles.confirmedHome}><Text style={styles.confirmedHomeText}>Back to home</Text></Pressable></View></View></SafeAreaView>; }
+function AppointmentConfirmation({ doctor, date, time, consultationType, onAppointments, onHome }: { doctor: Doctor; date: string; time: string; consultationType: ConsultationType; onAppointments: () => void; onHome: () => void }) { const rows = [['DOCTOR', doctor.name], ['DATE', formatAppointmentDate(date)], ['TIME', time], ['TYPE', consultationType.replace(' Consultation', ' consultation')], ['FEE', `₹${doctor.fee} · paid`]]; return <SafeAreaView style={styles.confirmedSafe}><StatusBar style="light" /><View style={styles.confirmedDecor} /><View style={styles.confirmedPage}><View style={styles.appointmentCheck}><Text style={styles.appointmentCheckText}>✓</Text></View><Text style={styles.confirmedTitle}>Appointment confirmed</Text><Text style={styles.confirmedNote}>We have saved the details and will{`\n`}remind you an hour before.</Text><View style={styles.confirmedSummary}>{rows.map(([label, value], index) => <View key={label} style={[styles.confirmedRow, index === rows.length - 1 && styles.confirmedRowLast]}><Text style={styles.confirmedLabel}>{label}</Text><Text style={styles.confirmedValue}>{value}</Text></View>)}</View><View style={styles.confirmedActions}><Pressable onPress={onAppointments} style={styles.confirmedPrimary}><Text style={styles.confirmedPrimaryText}>Go to my appointments</Text></Pressable><Pressable onPress={onHome} style={styles.confirmedHome}><Text style={styles.confirmedHomeText}>Back to home</Text></Pressable></View></View></SafeAreaView>; }
 
 function DoctorCard({ doctor, compact = false, availability = 'TODAY' }: { doctor: Doctor; compact?: boolean; availability?: string }) { return <View style={styles.doctorCard}><View style={styles.doctorAvatar}>{doctor.portrait ? <Image accessibilityLabel={`${doctor.name} profile photo`} source={doctor.portrait} resizeMode="cover" style={styles.doctorPortrait} /> : <Text style={styles.doctorAvatarText}>{doctor.initials}</Text>}</View><View style={styles.doctorInfo}><Text style={styles.doctorListName}>{doctor.name}</Text><Text style={styles.doctorMeta}>{doctor.qualification}</Text><Text style={styles.doctorMeta}>{doctor.experience} · {doctor.specialty}</Text><Text style={styles.doctorPrice}>₹{doctor.fee}</Text></View>{compact ? <View style={styles.doctorListRating}><Text style={styles.doctorListRatingText}><Text style={styles.doctorListRatingStar}>★ </Text>{doctor.rating}</Text><Text style={styles.doctorAvailability}>{availability}</Text></View> : null}</View>; }
 
@@ -2991,7 +2961,7 @@ function Field({ label, onboarding = false, ...props }: React.ComponentProps<typ
 function DateOfBirthCalendar({ visible, value, onClose, onSelect }: { visible: boolean; value: Date | null; onClose: () => void; onSelect: (value: Date) => void }) {
   const [visibleMonth, setVisibleMonth] = useState(() => startOfMonth(value ?? defaultDateOfBirth()));
   useEffect(() => { if (visible) setVisibleMonth(startOfMonth(value ?? defaultDateOfBirth())); }, [visible, value]);
-  const today = new Date();
+  const latestEligibleDate = adultCutoffDate();
   const year = visibleMonth.getFullYear();
   const month = visibleMonth.getMonth();
   const firstWeekday = new Date(year, month, 1).getDay();
@@ -3007,7 +2977,7 @@ function DateOfBirthCalendar({ visible, value, onClose, onSelect }: { visible: b
       <View style={styles.dobCalendarGrid}>{days.map((day, index) => {
         if (!day) return <View key={`empty-${index}`} style={styles.dobCalendarDaySlot} />;
         const date = new Date(year, month, day);
-        const disabled = date > today;
+        const disabled = date > latestEligibleDate;
         const selected = Boolean(value && localDateKey(date) === localDateKey(value));
         return <View key={day} style={styles.dobCalendarDaySlot}><Pressable accessibilityLabel={date.toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })} accessibilityRole="button" disabled={disabled} onPress={() => onSelect(date)} style={[styles.dobCalendarDay, selected && styles.dobCalendarDaySelected]}><Text style={[styles.dobCalendarDayText, disabled && styles.dobCalendarDayDisabled, selected && styles.dobCalendarDayTextSelected]}>{day}</Text></Pressable></View>;
       })}</View>
@@ -3028,8 +2998,9 @@ function PlanTile({ icon, title, detail }: { icon: string; title: string; detail
 function NavItem({ label, active = false, onPress }: { icon: string; label: string; active?: boolean; onPress?: () => void }) { return <BottomBarItem label={label} active={active} onPress={onPress} />; }
 function localDateKey(value: Date) { return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`; }
 function defaultDateOfBirth() { const value = new Date(); value.setFullYear(value.getFullYear() - 25); return value; }
+function adultCutoffDate() { const value = new Date(); value.setHours(0, 0, 0, 0); value.setFullYear(value.getFullYear() - 18); return value; }
 function startOfMonth(value: Date) { return new Date(value.getFullYear(), value.getMonth(), 1); }
-function clampCalendarMonth(value: Date) { const earliest = new Date(1900, 0, 1); const latest = startOfMonth(new Date()); return value < earliest ? earliest : value > latest ? latest : value; }
+function clampCalendarMonth(value: Date) { const earliest = new Date(1900, 0, 1); const latest = startOfMonth(adultCutoffDate()); return value < earliest ? earliest : value > latest ? latest : value; }
 function formatDateOfBirth(value: Date) { return `${String(value.getDate()).padStart(2, '0')} / ${String(value.getMonth() + 1).padStart(2, '0')} / ${value.getFullYear()}`; }
 function ageFromDateOfBirth(value: string) { const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/); if (!match) return null; const birthDate = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])); const today = new Date(); let age = today.getFullYear() - birthDate.getFullYear(); if (today.getMonth() < birthDate.getMonth() || (today.getMonth() === birthDate.getMonth() && today.getDate() < birthDate.getDate())) age -= 1; return age >= 0 && age <= 120 ? age : null; }
 function normalizeDateOfBirth(value: string) { const clean = value.trim(); if (/^\d{4}-\d{2}-\d{2}$/.test(clean)) return clean; const match = clean.match(/^(\d{1,2})\s*\/\s*(\d{1,2})\s*\/\s*(\d{4})$/); if (!match) return null; const day = Number(match[1]); const month = Number(match[2]); const year = Number(match[3]); const date = new Date(year, month - 1, day); if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return null; return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`; }

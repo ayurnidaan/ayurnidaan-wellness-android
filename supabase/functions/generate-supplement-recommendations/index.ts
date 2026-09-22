@@ -1,9 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { consumeRateLimit, corsHeadersFor, publicError } from "../_shared/security.ts";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-};
 
 type Domain = "hunger" | "thirst" | "sleep" | "stool" | "urine" | "sweat";
 type QuestionId = "Q1" | "Q2" | "Q3" | "Q4" | "Q5" | "Q6" | "Q7";
@@ -83,9 +80,11 @@ const normalizedForSymptoms = (value: unknown): string[] => Array.isArray(value)
   if (!item || typeof item !== "object") return [];
   const legacy = item as Record<string, unknown>;
   if (typeof legacy.domain !== "string" || typeof legacy.symptom !== "string") return [];
+  const legacyDomain = legacy.domain.trim();
+  const legacySymptom = legacy.symptom.trim();
   const matchedAnswer = domainQuestions
     .flatMap((question) => question.answers.map((answer) => ({ question, answer })))
-    .find(({ answer }) => answer.inventoryMatch?.domain === legacy.domain.trim() && answer.inventoryMatch.symptom === legacy.symptom.trim());
+    .find(({ answer }) => answer.inventoryMatch?.domain === legacyDomain && answer.inventoryMatch?.symptom === legacySymptom);
   return matchedAnswer ? [`${matchedAnswer.question.id}:${matchedAnswer.answer.id}`] : [];
 }))] : [];
 
@@ -207,6 +206,7 @@ Return ONLY valid JSON in exactly this structure:
 }`;
 
 Deno.serve(async (request) => {
+  const corsHeaders = corsHeadersFor(request);
   if (request.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   try {
     const authorization = request.headers.get("Authorization");
@@ -228,6 +228,8 @@ Deno.serve(async (request) => {
     if (!userResponse.ok) return Response.json({ error: "Invalid session" }, { status: 401, headers: corsHeaders });
     const user = await userResponse.json();
     if (!user?.id) return Response.json({ error: "Invalid session" }, { status: 401, headers: corsHeaders });
+    const quota = await consumeRateLimit(supabaseUrl, anonKey, authorization, "generate-supplements", 10, 86400);
+    if (!quota.allowed) return publicError(corsHeaders, quota.unavailable ? "The service is temporarily unavailable." : "Daily recommendation limit reached.", quota.unavailable ? 503 : 429);
 
     const assessmentResponse = await fetch(`${supabaseUrl}/rest/v1/current_health_assessments?select=id,user_id,symptoms,conclusion,vata_imbalanced,pitta_imbalanced,kapha_imbalanced,conversation,domain_answers&id=eq.${encodeURIComponent(assessmentId)}&user_id=eq.${encodeURIComponent(user.id)}&limit=1`, { headers: { Authorization: authorization, apikey: anonKey } });
     const [assessment] = assessmentResponse.ok ? await assessmentResponse.json() : [];
@@ -318,6 +320,6 @@ Deno.serve(async (request) => {
     return Response.json({ ...plan, filteredInventoryCount: filteredInventory.length }, { headers: corsHeaders });
   } catch (error) {
     console.error("Supplement recommendation generation failed", error instanceof Error ? error.message : "Unexpected error");
-    return Response.json({ error: error instanceof Error ? error.message : "Unexpected error" }, { status: 500, headers: corsHeaders });
+    return publicError(corsHeaders, "Supplement recommendations are temporarily unavailable.");
   }
 });

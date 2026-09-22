@@ -1,14 +1,12 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { gunaPrompt, gunaSchema, validGunaResult, scoreGunas } from './guna.ts';
 import { complaintClassificationPrompt, complaintClassificationSchema, validComplaintClassification, normalizeComplaintClassification } from './complaints.ts';
+import { consumeRateLimit, corsHeadersFor, publicError } from "../_shared/security.ts";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-};
 const isSafetyClassifierReply = (content: string) =>
   content.replace(/[^a-z]+/gi, " ").trim().toLowerCase() === "user safety safe response safety safe";
 type QuestionPayload = { question: string; options: string[] };
+type ChatMessage = { role: "user" | "assistant"; content: string };
 type VikritiDosha = "Vata" | "Pitta" | "Kapha";
 type DoshaFinding = { dosha: VikritiDosha; symptoms: string[]; reasoning: string };
 type ConclusionPayload = { imbalanced_doshas: DoshaFinding[] };
@@ -117,6 +115,7 @@ Output ONLY valid JSON in this format:
 }`;
 
 Deno.serve(async (request) => {
+  const corsHeaders = corsHeadersFor(request);
   if (request.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   try {
     const authorization = request.headers.get("Authorization");
@@ -139,8 +138,9 @@ Deno.serve(async (request) => {
     if (mode === "classify_complaints" && !patientResponse) {
       return Response.json({ error: "The patient's opening complaint is required" }, { status: 400, headers: corsHeaders });
     }
-    const messages = (Array.isArray(body.messages) ? body.messages : [])
-      .filter((message) => (message?.role === "user" || message?.role === "assistant") && typeof message?.content === "string")
+    const incomingMessages: unknown[] = Array.isArray(body.messages) ? body.messages : [];
+    const messages = incomingMessages
+      .filter((message: unknown): message is ChatMessage => Boolean(message && typeof message === "object" && (((message as ChatMessage).role === "user") || ((message as ChatMessage).role === "assistant")) && typeof (message as ChatMessage).content === "string"))
       .slice(-100)
       .map((message) => ({ role: message.role, content: message.content.slice(0, 4000) }));
     if (mode === "final" && !messages.length) {
@@ -155,6 +155,8 @@ Deno.serve(async (request) => {
     if (!userResponse.ok) return Response.json({ error: "Invalid session" }, { status: 401, headers: corsHeaders });
     const user = await userResponse.json();
     if (!user?.id) return Response.json({ error: "Invalid session" }, { status: 401, headers: corsHeaders });
+    const quota = await consumeRateLimit(supabaseUrl, anonKey, authorization, "current-health-chat", 60, 3600);
+    if (!quota.allowed) return publicError(corsHeaders, quota.unavailable ? "The service is temporarily unavailable." : "Assessment limit reached. Please try again later.", quota.unavailable ? 503 : 429);
 
     const prakritiResponse = await fetch(`${supabaseUrl}/rest/v1/prakriti_assessments?select=vata_percentage,pitta_percentage,kapha_percentage&user_id=eq.${encodeURIComponent(user.id)}&order=completed_at.desc&limit=1`, {
       headers: { Authorization: authorization, apikey: anonKey },
@@ -276,6 +278,6 @@ Deno.serve(async (request) => {
     throw new Error("The AI model did not return the required assessment format. Please try again.");
   } catch (error) {
     console.error("Current health assessment failed", error instanceof Error ? error.message : "Unexpected error");
-    return Response.json({ error: error instanceof Error ? error.message : "Unexpected error" }, { status: 500, headers: corsHeaders });
+    return publicError(corsHeaders, "The assessment service is temporarily unavailable.");
   }
 });

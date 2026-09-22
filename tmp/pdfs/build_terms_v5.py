@@ -159,7 +159,7 @@ section("1. Document structure, acceptance and priority", [
 
 section("2. Eligibility, capacity and children", [
     "The consumer Service is intended for persons who are at least 18 years old and competent to contract under Indian law. You must not create an independent account for a child or provide a child's personal data unless Ayurnidaan has introduced an age-appropriate flow that obtains verifiable consent from the child's parent or lawful guardian and satisfies the restrictions applicable to tracking, behavioural monitoring, and targeted advertising directed at children.",
-    "If the date of birth supplied indicates that the user is below 18, Ayurnidaan may suspend onboarding, request age assurance or verifiable parental consent, limit features, or delete data that cannot lawfully be processed. A parent or guardian who believes a child has supplied data without proper consent should contact hello@ayurnidaan.com."
+    "If the date of birth supplied indicates that the user is below 18, the current application prevents onboarding. Ayurnidaan does not currently offer a child or parental-consent flow. A parent or guardian who believes a child has supplied data without proper consent should contact hello@ayurnidaan.com."
 ])
 
 section("3. The Ayurnidaan Service", [
@@ -186,7 +186,7 @@ section("6. Assessments and personalised recommendations", [
 ])
 
 section("7. AI Vaidya and automated processing", [
-    "AI Vaidya sends the conversation and selected assessment context to Ayurnidaan's hosted function and then to OpenRouter, which routes requests to the configured language or vision model provider. Prakriti, Vikriti, and recorded symptoms are included in AI chat context. Age, height, and weight are additionally included only when the AI context setting is enabled. Meal photographs are sent to the configured vision model when you choose scan or upload.",
+    "AI Vaidya sends the conversation to Ayurnidaan's hosted function and then to OpenRouter, which routes requests to the configured language model provider. Stored Prakriti, Vikriti, symptoms, age, height, and weight are added only when the AI context setting is enabled. When it is disabled, AI Vaidya responds only to information in the current conversation. Meal photographs are sent to the configured vision model when you choose scan or upload.",
     "AI output may contain errors, omissions, bias, outdated information, hallucinations, or unsuitable suggestions. You must not rely on it as the sole basis for medical, financial, legal, or safety-critical decisions. Ayurnidaan may apply input validation, response schemas, safety classifiers, retry logic, output filtering, and human review, but these measures do not guarantee accuracy.",
     "Do not enter secrets, payment credentials, government identifiers, or another person's personal data in chat unless strictly necessary and lawfully authorised. Human support or authorised technical personnel may access limited records when required to investigate a reported defect, security incident, abuse, or rights request, subject to role-based access and confidentiality."
 ])
@@ -205,7 +205,7 @@ section("9. Shop, products, delivery and returns", [
 
 section("10. Payments", [
     "Where payment processing is enabled, Razorpay processes payment initiation, payment method selection, UPI app handoff, gateway authentication, and payment confirmation. Ayurnidaan receives transaction references, order identifiers, status, amount, currency, timestamps, limited failure information, and the resource linked to the payment. Ayurnidaan does not intend to store full card numbers, CVV, UPI PIN, or banking credentials.",
-    "Current product builds may operate in a temporary test or bypass mode in which no payment is collected and an appointment or order is confirmed locally or in the application data store. The checkout screen will indicate the applicable mode. Never share a UPI PIN, one-time password, card PIN, or banking password with Ayurnidaan personnel or practitioners.",
+    "An appointment or order that requires payment is fulfilled only after the server verifies the payment signature and amount. A failed, incomplete, duplicate, or unverified payment does not authorise fulfilment. Never share a UPI PIN, one-time password, card PIN, or banking password with Ayurnidaan personnel or practitioners.",
     "Payment disputes, reversals, chargebacks, refunds, and settlement timing may depend on Razorpay, banks, card networks, UPI participants, and applicable law. You authorise required transaction information to be shared with those parties for the requested payment and fraud prevention."
 ])
 
@@ -261,7 +261,7 @@ data_table([
     ("Body and preference data", "Height, weight, derived BMI, diet preference, health goals, notification and privacy settings.", "Display health profile, tailor food and wellness guidance, respect optional AI context and sharing choices."),
     ("Prakriti assessment", "Twenty-five answers, Vata/Pitta/Kapha scores and percentages, dominant Prakriti, completion time.", "Calculate and display natural constitution results and provide baseline context for recommendations."),
     ("Vikriti/current health", "Symptoms, free-text conversation, domain answers, lifestyle, sleep and stress information, imbalance flags, conclusion, completion time.", "Conduct current-health assessment, produce result, identify urgent language, and generate personalised plans."),
-    ("AI chat", "Prompts, conversation history, Prakriti, Vikriti and symptoms; age, height and weight only if AI context is enabled.", "Generate AI Vaidya replies, apply safety classification, maintain conversational context, troubleshoot failures."),
+    ("AI chat", "Prompts and conversation history; stored Prakriti, Vikriti, symptoms, age, height and weight only if AI context is enabled.", "Generate AI Vaidya replies, apply safety classification, maintain conversational context, troubleshoot failures."),
     ("Meal and nutrition", "Meal photographs submitted for scanning, identified foods, serving estimates, calories, protein, fat, meal timing and intake history.", "Recognise meal components, estimate nutrition, log intake, display progress, improve next recommendations."),
     ("Wellness plans", "Generated food recipes and tags, favour/limit lists, yoga practices and reasons, supplement suggestions, model name, user ratings and comments.", "Deliver and review personalised recommendations and improve output quality."),
     ("Doctor and consultation", "Selected tags, symptom notes, PDF reports, symptom photos, doctor selection, date/time/type/status, discussion summary and prescription.", "Match and book practitioners, give the chosen practitioner relevant context, maintain appointment and follow-up history."),
@@ -269,7 +269,7 @@ data_table([
     ("Payment", "Purpose, amount, currency, Razorpay order/payment references, status, timestamps, linked resource, limited failure details.", "Initiate and verify payment, reconcile orders or appointments, prevent fraud, process refunds and disputes. Full card or UPI credentials are not intended to be stored by Ayurnidaan."),
     ("Technical and security", "Device/app version, operating system, IP address, request metadata, session records, timestamps, error and security logs collected by infrastructure.", "Deliver the Service, diagnose faults, protect accounts, rate-limit misuse, investigate incidents and comply with lawful requests."),
     ("Support and feedback", "Email address, issue description, order/appointment number, attachments, ratings, comments and correspondence.", "Respond to support, investigate complaints, improve the Service and establish a record of resolution."),
-    ("Device-local records", "Authentication session, persistent cart, temporary appointment/order confirmations and red-flag handoff text stored through device local storage.", "Keep you signed in, preserve cart and temporary records between screens or restarts, transfer urgent-context text into doctor intake."),
+    ("Device-local records", "Authentication session stored in operating-system protected secure storage on supported native devices, and a persistent cart stored in application storage.", "Keep you signed in securely and preserve the shopping cart between screens or restarts."),
 ])
 
 section("20. Sources of personal data", [
@@ -282,12 +282,12 @@ section("21. Grounds and specified purposes for processing", [
     "Core account, assessment, booking, order, security, and support data is necessary to provide the corresponding requested feature. Optional personalisation, AI profile context, notifications, and doctor-sharing settings are separately controllable. Refusal or withdrawal may disable only the dependent feature unless the data is essential to the entire account."
 ], [("21.1 Purpose limitation", [
     "Personal data will not be used for an unrelated purpose without a fresh notice and valid consent or another lawful basis. Ayurnidaan will not sell personal data. It will not use health content for third-party advertising or permit unrelated practitioner access.",
-    "Ayurnidaan may create aggregated or de-identified statistics to evaluate reliability, demand, safety and product performance. Reasonable measures will be applied to prevent re-identification, and anonymous information will not be used to make decisions about an identifiable user."
+    "The reviewed application does not currently publish, sell, or disclose an anonymised user dataset. If Ayurnidaan later creates aggregated or de-identified statistics, it must document the method, test re-identification risk, restrict source-data access, and update this notice before external disclosure or materially new use."
 ])])
 
 section("22. Consent controls and feature consequences", [
-    "During onboarding, you are asked to confirm that personal data may be used for personalisation and recommendations and that you have read and agree to the Terms. When both confirmations are completed, the current application enables the privacy settings for health personalisation, AI context, doctor sharing, and notifications. You can later change supported settings under Privacy and consent.",
-    "Health personalisation allows profile and assessment information to shape recommendations. AI context allows age, height and weight to be included in AI Vaidya requests in addition to Prakriti, Vikriti and symptoms. Doctor sharing allows relevant notes, tags and uploaded reports to be shared with the practitioner chosen by you. Notifications allow service reminders where notification delivery is implemented and permission is granted by the device.",
+    "During onboarding, you must confirm that you have read and agree to the Terms. Personalisation is a separate optional choice and is not required to create an account. The current application leaves AI context and doctor sharing disabled until you enable them under Privacy and consent. You can later change supported settings there, and changes are recorded in the consent history.",
+    "Health personalisation allows profile and assessment information to shape recommendations. AI context allows stored Prakriti, Vikriti, symptoms, age, height and weight to be included in AI Vaidya requests. Doctor sharing allows relevant notes, tags and uploaded reports to be shared with the practitioner chosen by you. Notifications allow service reminders where notification delivery is implemented and permission is granted by the device.",
     "Turning off a setting applies prospectively and may not retract information already sent to a practitioner, model provider, payment network, or delivery partner for a request you initiated. You may separately request erasure, subject to lawful retention. Consent must be freely given, specific, informed, unconditional, and unambiguous, and may be withdrawn with ease comparable to the method used to give it."
 ])
 
@@ -328,7 +328,7 @@ retention_rows = [
     ("Orders, invoices, delivery and payments", "For up to 8 financial years or the longer period required for tax, accounting, consumer, fraud, chargeback, or legal obligations."),
     ("Support and complaints", "Up to 3 years after closure, or longer while a dispute, investigation or legal hold remains open."),
     ("Security and infrastructure logs", "Normally up to 180 days, extended only for incident investigation, abuse prevention, or legal requirements."),
-    ("Device-local cart and temporary data", "Until removed by the user, checkout completion where designed, logout/account change, app data clearing, or uninstall. Device backups may retain copies under operating-system controls."),
+    ("Device-local session and cart", "The session remains in protected secure storage until sign-out, expiry, revocation, app-data clearing, or uninstall. The cart remains until removed, checked out, the account changes, app data is cleared, or the app is uninstalled. Device backups may retain copies under operating-system controls."),
     ("Backups", "Protected rolling backups may persist for up to 90 additional days before overwrite, with access restricted to restoration and incident purposes."),
 ]
 rt = Table([[p("Data class", "TableHeadAyu"), p("Intended retention rule", "TableHeadAyu")]] + [[p(a,"SmallAyu"), p(b,"SmallAyu")] for a,b in retention_rows], colWidths=[48*mm,110*mm], repeatRows=1)
