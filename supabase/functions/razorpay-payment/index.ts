@@ -1,7 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { consumeRateLimit, corsHeadersFor, publicError } from "../_shared/security.ts";
 
-const doctorFees: Record<string, number> = { "Dr Anita Deshmukh": 800, "Dr Nikhil Khatana": 600, "Dr Lalit Madawat": 700, "Dr Nirmal Kumavat": 500, "Dr Ravi Menon": 900, "Dr Sunita Rao": 650 };
+const doctorFees: Record<string, number> = { "Dr Nikhil Khatana": 600, "Dr Lalit Madawat": 700, "Dr Nirmal Kumavat": 500 };
 const safeRedirect = (value: unknown) => typeof value === "string" && /^(ayurnidaan(?:-dev)?:\/\/payment-callback|exp:\/\/[^\s]+|https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?\/|https:\/\/(?:dist-fawn-zeta-72|dist-vikriti)\.vercel\.app\/)/i.test(value) ? value : null;
 const restHeaders = (serviceKey: string, prefer?: string) => ({ Authorization: `Bearer ${serviceKey}`, apikey: serviceKey, "Content-Type": "application/json", ...(prefer ? { Prefer: prefer } : {}) });
 
