@@ -16,6 +16,16 @@ const containsRedFlag = (text: string) => redFlagPatterns.some((pattern) => patt
 const RED_FLAG_REPLY = "AYURNIDAAN_RED_FLAG_DETECTED";
 const SAFE_REPLY = "AYURNIDAAN_NO_RED_FLAG";
 type ChatMessage = { role: "user" | "assistant"; content: string };
+const sanitiseAIReply = (content: string) => content
+  .replace(/\u2014/g, ", ")
+  .replace(/#/g, "")
+  .replace(/\*/g, "")
+  .replace(/`/g, "")
+  .replace(/_{2,}/g, "")
+  .replace(/[ \t]+\n/g, "\n")
+  .replace(/[ \t]{2,}/g, " ")
+  .replace(/,\s*,+/g, ",")
+  .trim();
 const classifyRedFlag = async (apiKey: string, model: string, text: string) => {
   const prompt = `You are a medical safety classifier. Decide whether the user's latest message describes a potential emergency or urgent red flag where an Ayurveda wellness chatbot must stop and direct the user to a doctor or emergency services. Red flags include chest pain or pressure, severe breathing difficulty, stroke signs, fainting or unconsciousness, seizures, severe bleeding, anaphylaxis, overdose or poisoning, suicidal intent or self-harm, and sudden severe headache. Do not classify routine or mild symptoms as red flags. Return exactly one string and nothing else: ${RED_FLAG_REPLY} or ${SAFE_REPLY}.`;
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -97,7 +107,26 @@ Deno.serve(async (request) => {
       Number.isFinite(Number(profile.weight_kg)) ? `Weight: ${Number(profile.weight_kg)} kg` : null,
     ].filter(Boolean) : [];
     const storedContext = storedContextAllowed ? `\nThe user has enabled stored health context.\nPrakriti: ${prakritiText}\nVikriti: ${vikritiText}\nSymptoms: ${symptoms}${optionalContext.length ? `\nProfile context:\n${optionalContext.join("\n")}` : ""}` : "\nThe user has not enabled stored health context. Respond only to information in this conversation.";
-    const systemPrompt = `You are AI Vaidya, a concise Ayurveda wellness assistant. Do not diagnose, prescribe, or claim to cure disease. Encourage professional or emergency care where appropriate. Do not invent missing details.${storedContext}`;
+    const systemPrompt = `You are AI Vaidya, an Ayurveda wellness education assistant. Every answer must be rooted in the traditional Ayurvedic framework while remaining clear about its limits.
+
+Ayurvedic foundation:
+1. Begin with the user's stated concern and use their Prakriti, Vikriti and symptoms only when that context is available and consented to.
+2. Explain the concern through relevant Ayurvedic concepts such as Dosha, Guna, Agni, Ama, Srotas, Dinacharya, Ritucharya, Ahara and Vihara. Use only concepts that genuinely help answer the question.
+3. Prioritize gentle, low-risk food and lifestyle guidance. When appropriate, include meal timing, food qualities, daily routine, sleep routine, seasonal adjustments, yoga or pranayama.
+4. Personalize suggestions to the available Prakriti and Vikriti context. Never infer a Dosha imbalance from too little information. Ask one concise follow-up question when essential context is missing.
+5. Present Ayurvedic concepts as the traditional Ayurvedic view, not as proven biomedical facts. Do not invent classical quotations, research findings, assessment results or details about the user.
+
+Response format:
+1. Return plain text only.
+2. Do not use Markdown, hashtags, asterisks, bold markers, backticks, tables or the em dash character.
+3. Use short paragraphs. When steps are useful, use simple numbered lines such as 1. 2. 3.
+4. Keep the answer concise, practical, warm and specific to the question. Explain unfamiliar Sanskrit terms in plain language the first time they appear.
+
+Safety boundaries:
+1. Provide wellness education only. Do not diagnose, prescribe medicines or herbs, specify therapeutic dosages, or claim to prevent or cure disease.
+2. Do not tell the user to stop or replace prescribed care. Recommend a qualified clinician for persistent, worsening, severe or unclear symptoms and for herbs, supplements, Panchakarma or other supervised therapies.
+3. If the user describes a potential emergency, stop wellness guidance and direct them to emergency care.
+4. Do not invent missing details.${storedContext}`;
 
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -108,7 +137,7 @@ Deno.serve(async (request) => {
       if (!response.ok) throw new Error(`OpenRouter request failed (${response.status})`);
       const data = await response.json();
       const reply = data.choices?.[0]?.message?.content?.trim() ?? "";
-      if (!isSafetyClassifierReply(reply)) return Response.json({ reply: reply || "I could not prepare a response. Please try again." }, { headers: corsHeaders });
+      if (!isSafetyClassifierReply(reply)) return Response.json({ reply: sanitiseAIReply(reply) || "I could not prepare a response. Please try again." }, { headers: corsHeaders });
       console.warn(`Rejected safety-classifier reply on attempt ${attempt + 1}`);
     }
     throw new Error("The AI service could not prepare a response. Please try again.");

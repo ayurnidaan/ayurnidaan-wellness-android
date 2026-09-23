@@ -2485,6 +2485,18 @@ function formatOrderDate(value: string) { return new Date(value).toLocaleString(
 function formatOrderStatus(value: string) { return value.split('-').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' '); }
 
 type ChatMessage = { role: 'user' | 'assistant'; content: string; options?: string[] };
+function sanitiseAIReply(content: string) {
+  return content
+    .replace(/\u2014/g, ', ')
+    .replace(/#/g, '')
+    .replace(/\*/g, '')
+    .replace(/`/g, '')
+    .replace(/_{2,}/g, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/,\s*,+/g, ',')
+    .trim();
+}
 function RedFlagSafeguardModal({ visible, userText, onClose, onDoctor }: { visible: boolean; userText: string; onClose: () => void; onDoctor: () => void }) {
   return <Modal transparent visible={visible} animationType="slide" onRequestClose={onClose} statusBarTranslucent>
     <View style={safeguardStyles.backdrop}>
@@ -2541,7 +2553,9 @@ function AIChat({ session, onExit, onOpenFood, onOpenShop, onOpenDoctor }: { ses
     const { data, error: functionError } = await supabase.functions.invoke('ai-chat', { body: { messages: requestMessages } });
     if (data?.red_flag === true || data?.reply === redFlagReply || data?.safety_code === redFlagReply || (functionError && isRedFlagMessage(content))) { setRedFlagText(content); setSending(false); return; }
     if (functionError || typeof data?.reply !== 'string') { setError('AI Vaidya could not respond. Please try again.'); setSending(false); return; }
-    setMessages(current => [...current, { role: 'assistant', content: data.reply }]); setSending(false);
+    const reply = sanitiseAIReply(data.reply);
+    if (!reply) { setError('AI Vaidya could not prepare a readable response. Please try again.'); setSending(false); return; }
+    setMessages(current => [...current, { role: 'assistant', content: reply }]); setSending(false);
   }
   function send() { void sendAnswer(input); }
   const hasStarted = messages.some(message => message.role === 'user');

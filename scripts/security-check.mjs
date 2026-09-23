@@ -10,6 +10,7 @@ const edgeFiles = readdirSync(functionRoot, { withFileTypes: true })
   .filter((entry) => entry.isDirectory() && entry.name !== '_shared')
   .map((entry) => join(functionRoot, entry.name, 'index.ts'));
 const edgeSource = edgeFiles.map(read).join('\n');
+const aiChat = read(join(functionRoot, 'ai-chat', 'index.ts'));
 
 const checks = [
   ['native sessions use SecureStore', supabaseClient.includes("from 'expo-secure-store'") && !supabaseClient.includes("AsyncStorage")],
@@ -24,6 +25,8 @@ const checks = [
   ['doctor applications require authentication and uploaded files', /if caller_id is null then raise exception 'Authentication required'/.test(migration) && /doctor-verification-files/.test(migration) && /doctor_identity_fingerprint/.test(migration)],
   ['Edge Functions do not use wildcard CORS', !/Access-Control-Allow-Origin["']?\s*:\s*["']\*["']/.test(edgeSource)],
   ['AI and payment endpoints invoke the database quota', ['ai-chat', 'current-health-chat', 'generate-food-plan', 'generate-supplement-recommendations', 'generate-yoga-plan', 'scan-food-meal', 'razorpay-payment'].every((name) => read(join(functionRoot, name, 'index.ts')).includes('consumeRateLimit'))],
+  ['AI Vaidya responses are normalised to plain text', aiChat.includes('const sanitiseAIReply') && aiChat.includes('.replace(/\\u2014/g, ", ")') && aiChat.includes('.replace(/#/g, "")') && aiChat.includes('.replace(/\\*/g, "")')],
+  ['AI Vaidya guidance is constrained to Ayurveda', ['Prakriti', 'Vikriti', 'Agni', 'Ama', 'Dinacharya', 'Ritucharya', 'Ahara', 'Vihara'].every((term) => aiChat.includes(term)) && aiChat.includes('Present Ayurvedic concepts as the traditional Ayurvedic view')],
 ];
 
 const failed = checks.filter(([, passed]) => !passed);
