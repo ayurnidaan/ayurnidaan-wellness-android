@@ -53,4 +53,4 @@ export async function consumeRateLimit(
 }
 
 export const publicError = (headers: Record<string, string>, message: string, status = 500) =>
-  Response.json({ error: message }, { status, headers });\n
+  Response.json({ error: message }, { status, headers });
