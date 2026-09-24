@@ -2449,7 +2449,7 @@ function DeleteAccountModal({ visible, onClose, onDeleted }: { visible: boolean;
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) throw new Error('Please sign in again before deleting your account.');
       const { data, error: deletionError } = await supabase.functions.invoke('delete-account', { body: { confirmation: 'DELETE_MY_ACCOUNT' } });
-      if (deletionError || !data?.deleted) throw new Error('Could not delete your account. Please try again.');
+      if (deletionError || !data?.deleted || !data?.verified) throw new Error('Could not verify complete account deletion. Please contact support.');
       homeAssessmentCache = null;
       try {
         await AsyncStorage.removeItem(shopCartKey(session.user.id));
@@ -2462,7 +2462,7 @@ function DeleteAccountModal({ visible, onClose, onDeleted }: { visible: boolean;
   return <Modal visible={visible} transparent animationType="fade" onRequestClose={() => { if (!busy) onClose(); }}><View style={{ flex: 1, backgroundColor: '#102D2299', justifyContent: 'center', padding: 28 }}><View style={{ backgroundColor: '#F8F5EC', borderRadius: 20, borderWidth: 1, borderColor: '#DED8CA', padding: 22 }}>
     <Text style={{ color: '#954D39', fontSize: 11, letterSpacing: 2, marginBottom: 14 }}>DELETE ACCOUNT</Text>
     <Text style={{ color: '#193D30', fontFamily: serif, fontSize: 23 }}>Delete your account permanently?</Text>
-    <Text style={{ color: '#748279', fontSize: 13, lineHeight: 20, marginTop: 14, marginBottom: 16 }}>Your Prakriti results, health history, prescriptions and orders will be removed. Appointments already booked will be cancelled. This cannot be undone.</Text>
+    <Text style={{ color: '#748279', fontSize: 13, lineHeight: 20, marginTop: 14, marginBottom: 16 }}>Your active account, profile, health records, consent history, appointments, orders and uploaded files will be permanently removed from Supabase. Provider security logs and backups expire under their retention schedules. This cannot be undone.</Text>
     {error ? <Text style={styles.error}>{error}</Text> : null}
     <Pressable accessibilityRole="button" disabled={busy} onPress={() => void deleteAccount()} style={{ backgroundColor: '#944F3B', borderRadius: 12, minHeight: 48, alignItems: 'center', justifyContent: 'center' }}>{busy ? <ActivityIndicator color="#FFF" /> : <Text style={{ color: '#FFF', fontWeight: '600' }}>Delete my account</Text>}</Pressable>
     <Pressable accessibilityRole="button" disabled={busy} onPress={onClose} style={{ borderWidth: 1, borderColor: '#E0DACC', borderRadius: 12, minHeight: 44, alignItems: 'center', justifyContent: 'center', marginTop: 10 }}><Text style={{ color: '#193D30' }}>Keep my account</Text></Pressable>

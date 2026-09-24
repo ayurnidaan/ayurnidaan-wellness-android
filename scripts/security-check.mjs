@@ -5,12 +5,14 @@ const read = (path) => readFileSync(path, 'utf8');
 const app = read('App.tsx');
 const supabaseClient = read(join('src', 'lib', 'supabase.ts'));
 const migration = read(join('supabase', 'migrations', '20260922090000_security_hardening.sql'));
+const erasureMigration = read(join('supabase', 'migrations', '20260924070000_complete_account_erasure.sql'));
 const functionRoot = join('supabase', 'functions');
 const edgeFiles = readdirSync(functionRoot, { withFileTypes: true })
   .filter((entry) => entry.isDirectory() && entry.name !== '_shared')
   .map((entry) => join(functionRoot, entry.name, 'index.ts'));
 const edgeSource = edgeFiles.map(read).join('\n');
 const aiChat = read(join(functionRoot, 'ai-chat', 'index.ts'));
+const deleteAccount = read(join(functionRoot, 'delete-account', 'index.ts'));
 
 const checks = [
   ['native sessions use SecureStore', supabaseClient.includes("from 'expo-secure-store'") && !supabaseClient.includes("AsyncStorage")],
@@ -28,6 +30,7 @@ const checks = [
   ['AI Vaidya responses are normalised to plain text', aiChat.includes('const sanitiseAIReply') && aiChat.includes('.replace(/\\u2014/g, ", ")') && aiChat.includes('.replace(/#/g, "")') && aiChat.includes('.replace(/\\*/g, "")')],
   ['AI Vaidya guidance is constrained to Ayurveda', ['Prakriti', 'Vikriti', 'Agni', 'Ama', 'Dinacharya', 'Ritucharya', 'Ahara', 'Vihara'].every((term) => aiChat.includes(term)) && aiChat.includes('Present Ayurvedic concepts as the traditional Ayurvedic view')],
   ['consent failures do not expose database details', !app.includes('setError(consentError.message)') && app.includes('We could not save your consent. Please try again.')],
+  ['account erasure covers active Supabase systems', ['avatars', 'doctor-intake-files', 'doctor-verification-files', 'purge_user_data', 'verify_user_data_erased', 'verified: true'].every((term) => deleteAccount.includes(term)) && erasureMigration.includes('create or replace function public.verify_user_data_erased') && erasureMigration.includes('public.current_auth_user_exists()')],
 ];
 
 const failed = checks.filter(([, passed]) => !passed);
