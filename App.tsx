@@ -382,7 +382,7 @@ function AccountScreen({ session, onBack, onComplete }: { session: Session | nul
     if (!name.trim()) return setError('Enter your name to continue.');
     setLoading(true); setError('');
     const { error: authError } = await supabase.auth.updateUser({ data: { full_name: name.trim() } });
-    const { error: profileError } = await supabase.from('profiles').upsert({ user_id: session.user.id, full_name: name.trim() });
+    const { error: profileError } = await supabase.from('profiles').update({ full_name: name.trim() }).eq('user_id', session.user.id);
     setLoading(false); if (authError) return setError(authError.message); if (profileError) return setError(profileError.message); onComplete();
   }
   return <ScreenFrame scroll alignTop>
@@ -402,7 +402,7 @@ function ValidationAccountScreen({ session, onBack, onComplete }: { session: Ses
     if (!name.trim() || normalizedMobile.length < 10) return setError('Enter your name and a valid mobile number.');
     setLoading(true); setError('');
     const { error: authError } = await supabase.auth.updateUser({ data: { full_name: name.trim() } });
-    const { error: profileError } = await supabase.from('profiles').upsert({ user_id: session.user.id, full_name: name.trim(), mobile_number: normalizedMobile });
+    const { error: profileError } = await supabase.from('profiles').update({ full_name: name.trim(), mobile_number: normalizedMobile }).eq('user_id', session.user.id);
     setLoading(false); if (authError) return setError(authError.message); if (profileError) return setError(profileError.message); onComplete();
   }
   return <ScreenFrame scroll alignTop>
@@ -425,7 +425,7 @@ function ProfileScreen({ session, onBack, onComplete }: { session: Session | nul
     if (!normalizedDob || !sex || !Number(height) || !Number(weight)) return setError('Complete every field and select your date of birth.');
     if ((ageFromDateOfBirth(normalizedDob) ?? 0) < 18) return setError('Ayurnidaan is currently available only to people aged 18 or older.');
     setLoading(true); setError('');
-    const { error: saveError } = await supabase.from('profiles').upsert({ user_id: session.user.id, full_name: session.user.user_metadata.full_name ?? null, date_of_birth: normalizedDob, sex, height_cm: Number(height), weight_kg: Number(weight) });
+    const { error: saveError } = await supabase.from('profiles').update({ full_name: session.user.user_metadata.full_name ?? null, date_of_birth: normalizedDob, sex, height_cm: Number(height), weight_kg: Number(weight) }).eq('user_id', session.user.id);
     setLoading(false); if (saveError) return setError(saveError.message); onComplete();
   }
   return <ScreenFrame scroll alignTop>
