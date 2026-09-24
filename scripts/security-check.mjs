@@ -27,6 +27,7 @@ const checks = [
   ['AI and payment endpoints invoke the database quota', ['ai-chat', 'current-health-chat', 'generate-food-plan', 'generate-supplement-recommendations', 'generate-yoga-plan', 'scan-food-meal', 'razorpay-payment'].every((name) => read(join(functionRoot, name, 'index.ts')).includes('consumeRateLimit'))],
   ['AI Vaidya responses are normalised to plain text', aiChat.includes('const sanitiseAIReply') && aiChat.includes('.replace(/\\u2014/g, ", ")') && aiChat.includes('.replace(/#/g, "")') && aiChat.includes('.replace(/\\*/g, "")')],
   ['AI Vaidya guidance is constrained to Ayurveda', ['Prakriti', 'Vikriti', 'Agni', 'Ama', 'Dinacharya', 'Ritucharya', 'Ahara', 'Vihara'].every((term) => aiChat.includes(term)) && aiChat.includes('Present Ayurvedic concepts as the traditional Ayurvedic view')],
+  ['consent failures do not expose database details', !app.includes('setError(consentError.message)') && app.includes('We could not save your consent. Please try again.')],
 ];
 
 const failed = checks.filter(([, passed]) => !passed);

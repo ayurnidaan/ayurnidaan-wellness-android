@@ -523,17 +523,32 @@ function TermsConsentScreen({ session, onBack, onComplete }: { session: Session 
   async function finishConsent() {
     if (!ready || !session?.user.id) return;
     setSaving(true); setError('');
-    const { error: consentError } = await supabase.rpc('record_consent', {
+    const consentPayload = {
       p_document_version: '5.0',
       p_document_sha256: '4641d907ce0e3eaf2ac34d763bb69244ed58076a2c1657f288777041ea17ffff',
       p_personalisation: personalisationAccepted,
       p_ai_context: false,
       p_doctor_sharing: false,
       p_channel: Platform.OS,
-    });
-    setSaving(false);
-    if (consentError) return setError(consentError.message);
-    onComplete();
+    };
+    try {
+      let { error: consentError } = await supabase.rpc('record_consent', consentPayload);
+      const schemaCacheRefreshing = consentError?.code === 'PGRST202' || consentError?.message.toLowerCase().includes('schema cache');
+      if (schemaCacheRefreshing) {
+        await new Promise(resolve => setTimeout(resolve, 900));
+        ({ error: consentError } = await supabase.rpc('record_consent', consentPayload));
+      }
+      if (consentError) {
+        const sessionExpired = consentError.message.toLowerCase().includes('jwt') || consentError.message.toLowerCase().includes('session');
+        setError(sessionExpired ? 'Your session has expired. Please sign in again.' : 'We could not save your consent. Please try again.');
+        return;
+      }
+      onComplete();
+    } catch {
+      setError('We could not save your consent. Please check your connection and try again.');
+    } finally {
+      setSaving(false);
+    }
   }
 return <SafeAreaView style={styles.termsSafe}><StatusBar style="dark" /><View style={styles.termsPage}><BackButton onPress={onBack} onboarding /><Text style={styles.termsTitle}>Terms &amp; consent</Text><Text style={styles.termsIntro}>Read the document below, choose whether to allow optional personalisation, then accept the terms to finish setting up.</Text><View style={styles.termsDocumentCard} testID={`embedded-terms-pdf-${String(termsDocumentPdf)}`}><View style={styles.termsDocumentHeader}><View style={styles.termsPdfIcon}><Text style={styles.termsPdfIconText}>PDF</Text></View><View style={styles.termsDocumentHeaderCopy}><Text style={styles.termsDocumentName}>Terms, Privacy &amp; Consent</Text><Text style={styles.termsDocumentMeta}>v5.0 · 15 pages · Sep 2026</Text></View><Text style={[styles.termsScrollHint, documentRead && styles.termsScrollHintRead]}>{documentRead ? 'Read' : 'Scroll to read'}</Text></View><View style={styles.termsZoomBar}><Text style={styles.termsZoomLabel}>ZOOM · {Math.round(documentZoom * 100)}%</Text><View style={styles.termsZoomControls}><Pressable accessibilityLabel="Zoom out document" disabled={documentZoom <= 1} onPress={() => setDocumentZoom(value => Math.max(1, Number((value - .25).toFixed(2))))} style={[styles.termsZoomButton, documentZoom <= 1 && styles.termsZoomButtonDisabled]}><Text style={styles.termsZoomButtonText}>−</Text></Pressable><Pressable accessibilityLabel="Reset document zoom" onPress={() => setDocumentZoom(1)} style={styles.termsZoomReset}><Text style={styles.termsZoomResetText}>Fit</Text></Pressable><Pressable accessibilityLabel="Zoom in document" disabled={documentZoom >= 2.5} onPress={() => setDocumentZoom(value => Math.min(2.5, Number((value + .25).toFixed(2))))} style={[styles.termsZoomButton, documentZoom >= 2.5 && styles.termsZoomButtonDisabled]}><Text style={styles.termsZoomButtonText}>+</Text></Pressable></View></View><ScrollView horizontal bounces={false} nestedScrollEnabled showsHorizontalScrollIndicator onLayout={({ nativeEvent: { layout } }) => setDocumentViewport({ width: layout.width, height: layout.height })} style={styles.termsDocumentScroll} contentContainerStyle={[styles.termsDocumentHorizontalContent, { width: documentContentWidth }]}><ScrollView accessibilityLabel="Terms of Use, Privacy Notice and Consent document" nestedScrollEnabled onScroll={handleDocumentScroll} scrollEventThrottle={32} showsVerticalScrollIndicator style={[styles.termsDocumentVerticalScroll, { width: documentContentWidth }]}><View style={styles.termsDocumentPages}>{termsDocumentPages.map((page, index) => <Image key={index} source={page} resizeMode="contain" style={[styles.termsDocumentPage, { width: documentPageWidth, height: documentPageHeight }]} />)}<Text style={styles.termsDocumentEnd}>END OF DOCUMENT</Text></View></ScrollView></ScrollView></View><ConsentRow disabled={!documentRead} checked={personalisationAccepted} label="Optional: use my personal data for personalisation and recommendations." onPress={() => setPersonalisationAccepted(value => !value)} /><ConsentRow disabled={!documentRead} checked={termsAccepted} label="I have read and agree to the terms and conditions." onPress={() => setTermsAccepted(value => !value)} />{!documentRead ? <Text style={styles.termsLockedHint}>Scroll to the end of the document to enable consent.</Text> : null}{error ? <Text style={styles.termsError}>{error}</Text> : null}</View><View style={styles.termsFooter}><Pressable accessibilityRole="button" disabled={!ready || saving} onPress={finishConsent} style={[styles.termsContinue, ready && styles.termsContinueReady]}>{saving ? <ActivityIndicator color="#FFF" /> : <Text style={[styles.termsContinueText, ready && styles.termsContinueTextReady]}>{ready ? 'All set' : 'Continue'}</Text>}</Pressable></View></SafeAreaView>;
 }
